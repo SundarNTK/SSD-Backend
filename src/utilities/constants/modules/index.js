@@ -45,6 +45,7 @@ const AVAILABLE_MODULES = [
   { key: "general-ledgers", label: "General Ledger (GL) Master", group: "Masters" },
   { key: "categories", label: "Category Master", group: "Masters" },
   { key: "sub-categories", label: "Sub Category Master", group: "Masters" },
+  { key: "items", label: "Item Master", group: "Masters" },
 ];
 
 const MODULE_KEYS = AVAILABLE_MODULES.map((m) => m.key);
