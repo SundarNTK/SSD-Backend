@@ -42,6 +42,7 @@ const AVAILABLE_MODULES = [
   { key: "gst", label: "GST Master", group: "Masters" },
   { key: "gl-groups", label: "GL Group Master", group: "Masters" },
   { key: "deities", label: "Deity Master", group: "Masters" },
+  { key: "general-ledgers", label: "General Ledger (GL) Master", group: "Masters" },
 ];
 
 const MODULE_KEYS = AVAILABLE_MODULES.map((m) => m.key);

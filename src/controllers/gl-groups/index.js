@@ -12,9 +12,11 @@ const { createSchema, updateSchema } = require("./request-objects");
 /**
  * `level` is required — the three tabs on GL Group Master each ask for one
  * level's rows, never a mixed list. `level1` is an *optional* extra filter,
- * used only by the cascading "Select Level 1" dropdown inside the Add
- * Level 2/3 modals (see components/admin/GlGroupPage.tsx) — the tab tables
- * themselves always show every row at that level, unfiltered.
+ * used only by the cascading "Select Level 1"/"Select Level 2" dropdowns
+ * inside the Add Level 2/3 modals (see components/admin/GlGroupPage.tsx and
+ * GeneralLedgerPage.tsx, which reuses this same endpoint for its own
+ * cascading GL Group selects) — the tab tables themselves always show every
+ * row at that level, unfiltered.
  */
 async function list(req, res) {
   try {
@@ -26,6 +28,7 @@ async function list(req, res) {
     const filter = GlGroup.notDeletedFilter({ level });
 
     if (req.query.level1) filter.level1 = req.query.level1;
+    if (req.query.level2) filter.level2 = req.query.level2;
     if (req.query.status !== undefined) filter.status = Number(req.query.status);
     if (req.query.search) {
       filter.name = new RegExp(req.query.search.trim(), "i");

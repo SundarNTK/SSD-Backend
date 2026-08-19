@@ -11,5 +11,11 @@ deitySchema.plugin(auditablePlugin);
 
 deitySchema.index({ name: 1 }, activeUniqueIndexOptions({ collation: { locale: "en", strength: 2 } }));
 deitySchema.index({ status: 1, createdAt: -1 });
+// Mongoose only auto-indexes _id — a `ref` field gets nothing for free.
+// Without this, "which deities point at printing group X" (a future
+// filter, and any later check for whether a group is still referenced
+// before it's deleted) is a full collection scan instead of an index
+// lookup once the table has any real size to it.
+deitySchema.index({ printingGroup: 1 });
 
 module.exports = mongoose.model("Deity", deitySchema);
