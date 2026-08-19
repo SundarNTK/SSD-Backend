@@ -1,0 +1,75 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+#
+# Connect this repo in the Render dashboard ("New > Blueprint") and it reads
+# this file to create the service. Values marked `sync: false` are secrets —
+# Render prompts for them once at setup instead of storing them here, so
+# nothing sensitive lands in git.
+#
+# No persistent disk needed: profile-image uploads go straight to
+# Cloudinary (see src/common/middleware/upload.js), so Render's ephemeral
+# filesystem is fine even on the free plan. That also means this same
+# config carries over unchanged to a later AWS move — nothing here depends
+# on Render-specific disk/storage behavior.
+services:
+  - type: web
+    name: ssd-backend
+    runtime: node
+    plan: free
+    buildCommand: pnpm install
+    startCommand: node src/server.js
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # PORT is injected automatically by Render — do not set it here.
+      - key: API_PREFIX
+        value: /api/v1
+      # Comma-separated list of allowed frontend origins (Vercel production
+      # domain + any preview domains you want to allow).
+      - key: CORS_ORIGIN
+        sync: false
+      - key: MONGO_URI
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: JWT_EXPIRES_IN
+        value: 8h
+      - key: BCRYPT_COST
+        value: "12"
+      - key: ACTIVATION_TOKEN_TTL_HOURS
+        value: "48"
+      - key: RESET_TOKEN_TTL_MINUTES
+        value: "30"
+      - key: MOBILE_OTP_TTL_MINUTES
+        value: "5"
+      # The deployed SSD-Frontend origin — activation/reset-password emails
+      # link to ${ADMIN_APP_URL}/admin/activate/:token etc.
+      - key: ADMIN_APP_URL
+        sync: false
+      # Set to "false" once a real SES identity is verified and
+      # AWS_ACCESS_KEY/AWS_SECRET_KEY/SENDER_EMAIL_ID below are filled in.
+      # Until then this stays "true" and emails are only logged, never sent.
+      - key: DRY_RUN_NOTIFICATIONS
+        value: "true"
+      - key: AWS_REGION
+        value: ap-southeast-1
+      - key: AWS_ACCESS_KEY
+        sync: false
+      - key: AWS_SECRET_KEY
+        sync: false
+      - key: SENDER_EMAIL_ID
+        sync: false
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      - key: SMS_SENDER_ID
+        value: SSDTEMPLE
+      - key: DEFAULT_ENTITY_CODE
+        value: SST
+      - key: SEED_SUPER_ADMIN_NAME
+        value: Temple Super Admin
+      - key: SEED_SUPER_ADMIN_EMAIL
+        sync: false

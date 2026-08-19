@@ -12,7 +12,11 @@ module.exports = {
   // + Notification-Service, four separate processes). One port for the whole thing.
   PORT: process.env.PORT || 5003,
   API_PREFIX: process.env.API_PREFIX || "/api/v1",
-  CORS_ORIGIN: process.env.CORS_ORIGIN || "http://localhost:5001",
+  // Comma-separated so both a Vercel production domain and its per-branch
+  // preview domains can be allowed at once, e.g.
+  // "https://ssd-admin.vercel.app,https://ssd-frontend-git-develop-xxx.vercel.app".
+  // See app.js's cors() call, which splits this into an array.
+  CORS_ORIGIN: process.env.CORS_ORIGIN || "http://localhost:3000",
 
   MONGO_URI: process.env.MONGO_URI || "mongodb://127.0.0.1:27017/ssd-temple",
 
@@ -42,6 +46,14 @@ module.exports = {
   AWS_ACCESS_KEY: process.env.AWS_ACCESS_KEY || "",
   AWS_SECRET_KEY: process.env.AWS_SECRET_KEY || "",
   SENDER_EMAIL_ID: process.env.SENDER_EMAIL_ID || "no-reply@example-temple.org",
+
+  // Profile image uploads — see common/utils/cloudinary.js and
+  // common/middleware/upload.js. Chosen over local disk (wiped on every
+  // Render redeploy) and over S3 (deferred until the AWS move) because it
+  // works identically on Render today and after that migration.
+  CLOUDINARY_CLOUD_NAME: process.env.CLOUDINARY_CLOUD_NAME || "",
+  CLOUDINARY_API_KEY: process.env.CLOUDINARY_API_KEY || "",
+  CLOUDINARY_API_SECRET: process.env.CLOUDINARY_API_SECRET || "",
 
   // SMS — placeholders only; nothing in the Day-1 auth flow sends an SMS yet
   // (mobile-change OTP arrives later per the build sequence), but the env
