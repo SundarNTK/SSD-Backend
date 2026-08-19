@@ -40,6 +40,7 @@ const AVAILABLE_MODULES = [
   { key: "email-templates", label: "Email Templates", group: "Administration" },
   { key: "printing-groups", label: "Printing Group Master", group: "Masters" },
   { key: "gst", label: "GST Master", group: "Masters" },
+  { key: "gl-groups", label: "GL Group Master", group: "Masters" },
 ];
 
 const MODULE_KEYS = AVAILABLE_MODULES.map((m) => m.key);

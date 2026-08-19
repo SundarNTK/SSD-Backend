@@ -9,6 +9,7 @@ const customerAdminRoutes = require("../controllers/customers");
 const mastersRoutes = require("../controllers/masters");
 const printingGroupRoutes = require("../controllers/printing-groups");
 const gstRoutes = require("../controllers/gst");
+const glGroupRoutes = require("../controllers/gl-groups");
 const posRoutes = require("../controllers/pos");
 const inventoryRoutes = require("../controllers/inventory");
 const paymentsRoutes = require("../controllers/payments");
@@ -49,6 +50,7 @@ router.use("/me", customerProfileRoutes); // customer-side: the caller's own dev
 router.use("/masters", mastersRoutes);
 router.use("/masters", printingGroupRoutes);
 router.use("/masters", gstRoutes);
+router.use("/masters", glGroupRoutes);
 router.use("/pos", posRoutes);
 router.use("/inventory", inventoryRoutes);
 router.use("/payments", paymentsRoutes);
