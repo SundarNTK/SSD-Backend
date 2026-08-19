@@ -149,7 +149,7 @@ async function create(req, res) {
     // register() already goes out of its way to avoid.
     await ensureCustomerProfileForUser(user, entity._id);
 
-    const activationUrl = `${env.ADMIN_APP_URL}/activate/${rawToken}`;
+    const activationUrl = `${env.ADMIN_APP_URL}/admin/activate/${rawToken}`;
     await sendTemplatedEmail("ACCOUNT_ACTIVATION", entity._id, user.email, {
       name: user.name,
       activationUrl,

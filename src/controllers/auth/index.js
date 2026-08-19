@@ -106,7 +106,7 @@ async function register(req, res) {
       familyMembers,
     });
 
-    const activationUrl = `${env.ADMIN_APP_URL}/activate/${rawToken}`;
+    const activationUrl = `${env.ADMIN_APP_URL}/admin/activate/${rawToken}`;
     await sendTemplatedEmail("ACCOUNT_ACTIVATION", entity._id, user.email, {
       name: user.name,
       activationUrl,
@@ -203,7 +203,7 @@ async function forgotPassword(req, res) {
       user.passwordResetTokenExpiresAt = addMinutes(new Date(), env.RESET_TOKEN_TTL_MINUTES);
       await user.save();
 
-      const resetUrl = `${env.ADMIN_APP_URL}/reset-password/${rawToken}`;
+      const resetUrl = `${env.ADMIN_APP_URL}/admin/reset-password/${rawToken}`;
       const defaultAssignment = user.getDefaultEntityAssignment();
       await sendTemplatedEmail("PASSWORD_RESET", defaultAssignment?.entity, user.email, {
         name: user.name,
