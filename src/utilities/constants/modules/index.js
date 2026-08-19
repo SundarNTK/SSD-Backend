@@ -38,6 +38,7 @@ const AVAILABLE_MODULES = [
   { key: "customers", label: "Customers", group: "Administration" },
   { key: "roles", label: "Roles & Permissions", group: "Administration" },
   { key: "email-templates", label: "Email Templates", group: "Administration" },
+  { key: "printing-groups", label: "Printing Group Master", group: "Masters" },
 ];
 
 const MODULE_KEYS = AVAILABLE_MODULES.map((m) => m.key);

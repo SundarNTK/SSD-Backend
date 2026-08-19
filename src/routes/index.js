@@ -7,6 +7,7 @@ const userRoutes = require("../controllers/users");
 const customerProfileRoutes = require("../controllers/customer-profile");
 const customerAdminRoutes = require("../controllers/customers");
 const mastersRoutes = require("../controllers/masters");
+const printingGroupRoutes = require("../controllers/printing-groups");
 const posRoutes = require("../controllers/pos");
 const inventoryRoutes = require("../controllers/inventory");
 const paymentsRoutes = require("../controllers/payments");
@@ -45,6 +46,7 @@ router.use("/me", customerProfileRoutes); // customer-side: the caller's own dev
 // is a working health-check router today, not a placeholder file, so every
 // folder under controllers/ does something rather than sitting empty.
 router.use("/masters", mastersRoutes);
+router.use("/masters", printingGroupRoutes);
 router.use("/pos", posRoutes);
 router.use("/inventory", inventoryRoutes);
 router.use("/payments", paymentsRoutes);
