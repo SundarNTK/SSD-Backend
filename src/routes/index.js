@@ -8,6 +8,7 @@ const customerProfileRoutes = require("../controllers/customer-profile");
 const customerAdminRoutes = require("../controllers/customers");
 const mastersRoutes = require("../controllers/masters");
 const printingGroupRoutes = require("../controllers/printing-groups");
+const gstRoutes = require("../controllers/gst");
 const posRoutes = require("../controllers/pos");
 const inventoryRoutes = require("../controllers/inventory");
 const paymentsRoutes = require("../controllers/payments");
@@ -47,6 +48,7 @@ router.use("/me", customerProfileRoutes); // customer-side: the caller's own dev
 // folder under controllers/ does something rather than sitting empty.
 router.use("/masters", mastersRoutes);
 router.use("/masters", printingGroupRoutes);
+router.use("/masters", gstRoutes);
 router.use("/pos", posRoutes);
 router.use("/inventory", inventoryRoutes);
 router.use("/payments", paymentsRoutes);
