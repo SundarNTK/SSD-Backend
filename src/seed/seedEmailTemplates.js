@@ -1,17 +1,20 @@
 const EmailTemplate = require("../models/email-templates");
 const EmailTemplateMapping = require("../models/email-template-mappings");
 
+// Same palette as the Admin Panel itself (app/globals.css's --color-* tokens
+// in SSD-Frontend), inlined as literal hex — email clients don't read CSS
+// custom properties, so the values have to be copied rather than referenced.
 const baseWrap = (title, bodyHtml) => `
-  <div style="font-family:Georgia,serif;background:#0a0e21;padding:40px 0;">
+  <div style="font-family:Georgia,serif;background:#fbf6ea;padding:40px 0;">
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
       <tr><td align="center">
         <table role="presentation" width="480" cellpadding="0" cellspacing="0"
-          style="background:#101635;border:1px solid #d4af3733;border-radius:16px;overflow:hidden;">
+          style="background:#ffffff;border:1px solid #d4af3740;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(42,32,19,0.08);">
           <tr><td style="padding:32px 36px;">
-            <p style="color:#d4af37;letter-spacing:3px;font-size:11px;text-transform:uppercase;margin:0 0 8px;">
+            <p style="color:#96691b;letter-spacing:3px;font-size:11px;text-transform:uppercase;margin:0 0 8px;">
               Sri Siva Durga Temple
             </p>
-            <h1 style="color:#fdf3d8;font-size:22px;margin:0 0 20px;">${title}</h1>
+            <h1 style="color:#2a2013;font-size:22px;margin:0 0 20px;">${title}</h1>
             ${bodyHtml}
           </td></tr>
         </table>
@@ -21,7 +24,7 @@ const baseWrap = (title, bodyHtml) => `
 
 const buttonHtml = (href, label) => `
   <a href="${href}" style="display:inline-block;margin-top:20px;padding:12px 28px;
-    background:linear-gradient(#f0d17e,#b8892a);color:#0a0e21;text-decoration:none;
+    background:linear-gradient(#f0d17e,#b8892a);color:#2a2013;text-decoration:none;
     border-radius:10px;font-weight:600;">${label}</a>`;
 
 const DEFAULT_TEMPLATES = [
@@ -31,12 +34,12 @@ const DEFAULT_TEMPLATES = [
     subject: "Set your password — Sri Siva Durga Temple",
     htmlContent: baseWrap(
       "Welcome to the Temple",
-      `<p style="color:#d9d3c2;font-size:14.5px;line-height:1.6;">Namaste {{name}},</p>
-       <p style="color:#d9d3c2;font-size:14.5px;line-height:1.6;">
+      `<p style="color:#5c4d33;font-size:14.5px;line-height:1.6;">Namaste {{name}},</p>
+       <p style="color:#5c4d33;font-size:14.5px;line-height:1.6;">
          An account has been created for you. Set your password to continue.
        </p>
        ${buttonHtml("{{activationUrl}}", "Set Your Password")}
-       <p style="color:#a9a28d;font-size:12.5px;margin-top:24px;">
+       <p style="color:#7d6c4d;font-size:12.5px;margin-top:24px;">
          This link stays valid until you use it, and works only once. If you weren't expecting this, you can ignore it.
        </p>`
     ),
@@ -47,12 +50,12 @@ const DEFAULT_TEMPLATES = [
     subject: "Reset your password — Sri Siva Durga Temple",
     htmlContent: baseWrap(
       "Reset Your Password",
-      `<p style="color:#d9d3c2;font-size:14.5px;line-height:1.6;">Namaste {{name}},</p>
-       <p style="color:#d9d3c2;font-size:14.5px;line-height:1.6;">
+      `<p style="color:#5c4d33;font-size:14.5px;line-height:1.6;">Namaste {{name}},</p>
+       <p style="color:#5c4d33;font-size:14.5px;line-height:1.6;">
          We received a request to reset your password. Click below to choose a new one.
        </p>
        ${buttonHtml("{{resetUrl}}", "Reset Password")}
-       <p style="color:#a9a28d;font-size:12.5px;margin-top:24px;">
+       <p style="color:#7d6c4d;font-size:12.5px;margin-top:24px;">
          This link expires in {{expiresInMinutes}} minutes. If you didn't request this, your password is still safe — just ignore this email.
        </p>`
     ),
@@ -88,4 +91,4 @@ async function ensureDefaultEmailTemplates(entityId) {
   }
 }
 
-module.exports = { ensureDefaultEmailTemplates };
+module.exports = { ensureDefaultEmailTemplates, DEFAULT_TEMPLATES };
