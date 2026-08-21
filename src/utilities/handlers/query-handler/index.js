@@ -1,3 +1,5 @@
+const escapeRegex = require("../../../common/utils/escape-regex");
+
 /**
  * Builds the paginated list-query shape every "list" endpoint in this
  * service was hand-rolling identically (common/factories/crud-controller.js
@@ -22,7 +24,7 @@ function queryHandler(req, { notDeletedFilter, searchFields = [] } = {}) {
   }
 
   if (req.query.search && searchFields.length > 0) {
-    const regex = new RegExp(req.query.search.trim(), "i");
+    const regex = new RegExp(escapeRegex(req.query.search.trim()), "i");
     filter.$or = searchFields.map((field) => ({ [field]: regex }));
   }
 

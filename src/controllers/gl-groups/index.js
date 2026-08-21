@@ -5,6 +5,7 @@ const requirePermission = require("../../common/middleware/require-permission");
 const validateBody = require("../../common/middleware/validate");
 const makeCrudController = require("../../common/factories/crud-controller");
 const { responseHandler, exceptionHandler } = require("../../utilities/handlers");
+const escapeRegex = require("../../common/utils/escape-regex");
 
 const GlGroup = require("../../models/gl-groups");
 const { createSchema, updateSchema } = require("./request-objects");
@@ -31,7 +32,7 @@ async function list(req, res) {
     if (req.query.level2) filter.level2 = req.query.level2;
     if (req.query.status !== undefined) filter.status = Number(req.query.status);
     if (req.query.search) {
-      filter.name = new RegExp(req.query.search.trim(), "i");
+      filter.name = new RegExp(escapeRegex(req.query.search.trim()), "i");
     }
 
     let query = GlGroup.find(filter).sort({ createdAt: -1 }).skip((page - 1) * pageSize).limit(pageSize);

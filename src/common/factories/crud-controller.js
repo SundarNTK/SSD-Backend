@@ -1,4 +1,5 @@
 const { responseHandler, exceptionHandler } = require("../../utilities/handlers");
+const escapeRegex = require("../utils/escape-regex");
 
 /**
  * Every master (Email Template, Email Template Mapping today; Role, Entity,
@@ -16,7 +17,7 @@ function makeCrudController(Model, { searchFields = [], populate = [] } = {}) {
       if (req.query.status !== undefined) filter.status = Number(req.query.status);
 
       if (req.query.search && searchFields.length > 0) {
-        const regex = new RegExp(req.query.search.trim(), "i");
+        const regex = new RegExp(escapeRegex(req.query.search.trim()), "i");
         filter.$or = searchFields.map((field) => ({ [field]: regex }));
       }
 
