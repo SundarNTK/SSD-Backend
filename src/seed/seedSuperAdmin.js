@@ -36,8 +36,8 @@ async function run() {
   await ensureDefaultPaymentModes();
 
   const roles = await ensureDefaultRoles();
-  const superAdminRole = roles["Super Admin"];
-  console.log(`>>> Seed: roles ready — Super Admin / Admin / Customer`);
+  const superAdminRole = roles["System Admin"];
+  console.log(`>>> Seed: roles ready — System Admin / Admin / Customer`);
 
   const email = env.SEED_SUPER_ADMIN_EMAIL;
   const existing = await User.findOne(User.notDeletedFilter({ email }));
@@ -50,7 +50,7 @@ async function run() {
     if (assignment && !alreadyHasRole) {
       assignment.roles = [superAdminRole._id];
       await existing.save();
-      console.log(`>>> Seed: assigned "Super Admin" role to existing user "${email}"`);
+      console.log(`>>> Seed: assigned "System Admin" role to existing user "${email}"`);
     } else {
       console.log(`>>> Seed: user "${email}" already exists (userType: ${existing.userType}) and already has a role.`);
     }
@@ -79,10 +79,10 @@ async function run() {
     expiresInHours: env.ACTIVATION_TOKEN_TTL_HOURS,
   });
 
-  console.log("\n>>> Super Admin created:");
+  console.log("\n>>> System Admin created:");
   console.log(`    email: ${user.email}`);
   console.log(`    entity: ${entity.code}`);
-  console.log(`    role: Super Admin`);
+  console.log(`    role: System Admin`);
   console.log(`    devotee profile: ${profile.customerCode}`);
   console.log(`    activation link (DRY_RUN — use this directly): ${activationUrl}\n`);
 

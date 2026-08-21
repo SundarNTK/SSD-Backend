@@ -75,6 +75,6 @@ services:
       - key: DEFAULT_ENTITY_CODE
         value: SST
       - key: SEED_SUPER_ADMIN_NAME
-        value: Temple Super Admin
+        value: Temple System Admin
       - key: SEED_SUPER_ADMIN_EMAIL
         sync: false

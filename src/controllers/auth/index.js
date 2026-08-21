@@ -80,7 +80,7 @@ async function login(req, res) {
 
 /**
  * Public — anyone can call this, so it only ever creates a CUSTOMER
- * account. Admin/Super Admin accounts are never self-registered; those
+ * account. Admin/System Admin accounts are never self-registered; those
  * come from an existing admin using the User Master, which reuses the same
  * createPendingUser() / createCustomerProfile() helpers this calls, just
  * with a different (permission-checked) caller and userType.

@@ -1,5 +1,5 @@
 /**
- * Creates an ADDITIONAL Super Admin account on demand — distinct from
+ * Creates an ADDITIONAL System Admin account on demand — distinct from
  * `seedSuperAdmin.js`, which only ever bootstraps the one default account
  * from .env and refuses to run again once that exists. Use this for a
  * personal login, or a teammate's, without editing .env each time.
@@ -63,7 +63,7 @@ async function run() {
     mobileNumber: mobileNumber || null,
     userType: USER_TYPES.SUPER_ADMIN,
     entityId: entity._id,
-    roleIds: [roles["Super Admin"]._id],
+    roleIds: [roles["System Admin"]._id],
   });
 
   // Both pools — staff are devotees too. See customer.service.js.
@@ -76,7 +76,7 @@ async function run() {
     expiresInHours: env.ACTIVATION_TOKEN_TTL_HOURS,
   });
 
-  console.log("\n>>> Super Admin created:");
+  console.log("\n>>> System Admin created:");
   console.log(`    name: ${user.name}`);
   console.log(`    email: ${user.email}`);
   console.log(`    entity: ${entity.code}`);

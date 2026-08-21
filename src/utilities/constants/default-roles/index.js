@@ -7,7 +7,7 @@
  */
 const DEFAULT_ROLES = [
   {
-    name: "Super Admin",
+    name: "System Admin",
     description: "Full access to every module — not gated by the permissions list below, the account's userType alone grants this.",
     permissions: [],
   },
@@ -29,8 +29,8 @@ const DEFAULT_ROLES = [
 
 /**
  * Roles the platform itself depends on. They can be renamed or have their
- * permissions tuned by a Super Admin, but a non-Super-Admin must never be
- * able to touch them — "Super Admin" in particular is the role every
+ * permissions tuned by a System Admin, but a non-System-Admin must never be
+ * able to touch them — "System Admin" in particular is the role every
  * bootstrap script assigns, and deleting it would break account creation.
  */
 const SYSTEM_ROLE_NAMES = DEFAULT_ROLES.map((r) => r.name);

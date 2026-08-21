@@ -75,7 +75,7 @@ function assertGrantableRoles(req, roleDocs = []) {
 
 /**
  * Editing a role you personally hold is self-escalation with an extra step:
- * add a permission to your own role, sign in again, keep it. Super Admins
+ * add a permission to your own role, sign in again, keep it. System Admins
  * are exempt (they already bypass permissions entirely, so there's nothing
  * to escalate to).
  */

@@ -41,10 +41,10 @@ async function resolveAssignableRoles(req, roleIds = []) {
   return roles;
 }
 
-/** Only a Super Admin may create, modify, or otherwise act on a Super Admin. */
+/** Only a System Admin may create, modify, or otherwise act on a System Admin. */
 function assertMaySuperAdmin(req, action) {
   if (!isSuperAdmin(req)) {
-    throw `Only a Super Admin can ${action} a Super Admin account.`;
+    throw `Only a System Admin can ${action} a System Admin account.`;
   }
 }
 
@@ -177,7 +177,7 @@ async function update(req, res) {
     const { name, email, mobileNumber, roleIds, accessUpto, status, profileImage } = req.body;
     const isSelf = String(user._id) === String(req.auth?.userId);
 
-    // A Super Admin account is only ever editable by another Super Admin —
+    // A System Admin account is only ever editable by another System Admin —
     // otherwise `users:edit` becomes a way to lock out or take over the
     // highest-privilege accounts on the platform.
     if (user.userType === USER_TYPES.SUPER_ADMIN) assertMaySuperAdmin(req, "modify");
@@ -196,13 +196,13 @@ async function update(req, res) {
       if (assignment) assignment.roles = roleIds;
     }
 
-    // Deactivating the last active Super Admin leaves nobody able to
+    // Deactivating the last active System Admin leaves nobody able to
     // administer the platform — and nobody able to undo it either.
     if (status === 0 && user.userType === USER_TYPES.SUPER_ADMIN && user.status === 1) {
       const remaining = await User.countDocuments(
         User.notDeletedFilter({ userType: USER_TYPES.SUPER_ADMIN, status: 1, _id: { $ne: user._id } })
       );
-      if (remaining === 0) throw "This is the last active Super Admin — deactivating it would lock everyone out.";
+      if (remaining === 0) throw "This is the last active System Admin — deactivating it would lock everyone out.";
     }
 
     if (email && email.toLowerCase() !== user.email) {

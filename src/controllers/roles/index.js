@@ -31,12 +31,12 @@ async function loadRole(id) {
 /**
  * Two separate rules, and the order matters — the stricter one runs first.
  *
- * 1. Locked roles ("Super Admin", "Customer") are refused for EVERYONE,
- *    Super Admins included. Their behaviour comes from the account's
+ * 1. Locked roles ("System Admin", "Customer") are refused for EVERYONE,
+ *    System Admins included. Their behaviour comes from the account's
  *    userType, so there is nothing here that editing could change, and the
  *    bootstrap scripts look them up by name. See models/roles/index.js.
  * 2. Remaining seeded roles — "Admin" today — are configurable, but only by
- *    a Super Admin.
+ *    a System Admin.
  */
 function assertRoleIsEditable(req, role) {
   if (role.isLocked) {
@@ -44,7 +44,7 @@ function assertRoleIsEditable(req, role) {
   }
   if (isSuperAdmin(req)) return;
   if (SYSTEM_ROLE_NAMES.includes(role.name)) {
-    throw `"${role.name}" is a system role — only a Super Admin can change it.`;
+    throw `"${role.name}" is a system role — only a System Admin can change it.`;
   }
 }
 

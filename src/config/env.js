@@ -73,6 +73,6 @@ module.exports = {
 
   // Seed script — the default entity every user/master belongs to today.
   DEFAULT_ENTITY_CODE: process.env.DEFAULT_ENTITY_CODE || "SST",
-  SEED_SUPER_ADMIN_NAME: process.env.SEED_SUPER_ADMIN_NAME || "Temple Super Admin",
+  SEED_SUPER_ADMIN_NAME: process.env.SEED_SUPER_ADMIN_NAME || "Temple System Admin",
   SEED_SUPER_ADMIN_EMAIL: (process.env.SEED_SUPER_ADMIN_EMAIL || "superadmin@example-temple.org").toLowerCase(),
 };
