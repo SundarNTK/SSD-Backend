@@ -17,6 +17,7 @@ const { USER_TYPES } = require("../utilities/constants/user-types");
 const ensureDefaultEntity = require("../utilities/helpers/ensure-default-entity");
 const ensureDefaultRoles = require("../utilities/helpers/ensure-default-roles");
 const { ensureDefaultEmailTemplates } = require("./seedEmailTemplates");
+const { ensureDefaultPaymentModes } = require("./seedPaymentModes");
 const { generateRawToken, hashToken, addHours } = require("../common/utils/token");
 const sendTemplatedEmail = require("../utilities/helpers/send-templated-email");
 
@@ -32,6 +33,7 @@ async function run() {
   console.log(`>>> Seed: entity "${entity.code}" (${entity.name}) ready — _id ${entity._id}`);
 
   await ensureDefaultEmailTemplates(entity._id);
+  await ensureDefaultPaymentModes();
 
   const roles = await ensureDefaultRoles();
   const superAdminRole = roles["Super Admin"];

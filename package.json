@@ -10,14 +10,17 @@
     "create:super-admin": "node src/seed/createSuperAdmin.js",
     "test": "echo \"Error: no test specified\" && exit 1",
     "sync:pools": "node src/seed/syncPools.js",
+    "seed:payment-modes": "node src/seed/seedPaymentModes.js",
     "migrate": "node src/seed/migrate.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "packageManager": "pnpm@10.33.4",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "dependencies": {
-    "@aws-sdk/client-ses": "^3.1111.0",
     "bcryptjs": "^3.0.3",
     "cloudinary": "^2.10.0",
     "cors": "^2.8.6",
@@ -30,6 +33,7 @@
     "mongoose": "^9.9.2",
     "morgan": "^1.11.0",
     "multer": "^2.2.0",
+    "nodemailer": "^6.9.16",
     "uuid": "^14.0.1",
     "zxcvbn": "^4.4.2"
   },

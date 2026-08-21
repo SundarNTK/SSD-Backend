@@ -39,12 +39,14 @@ module.exports = {
    */
   DRY_RUN_NOTIFICATIONS: (process.env.DRY_RUN_NOTIFICATIONS ?? "true") === "true",
 
-  // Same key names as HEB's Notification-Service (D:\PROJECTS\HEB\Notification-Service),
-  // so swapping HEB's placeholder values for the client's real SES identity later
-  // is a drop-in .env change, not a code change.
-  AWS_REGION: process.env.AWS_REGION || "ap-southeast-1",
-  AWS_ACCESS_KEY: process.env.AWS_ACCESS_KEY || "",
-  AWS_SECRET_KEY: process.env.AWS_SECRET_KEY || "",
+  // Same dual-provider approach as Syncetra-Backend (source/service/email):
+  // Brevo's HTTP API first — Gmail SMTP is blocked outbound on Render's free
+  // tier — falling back to Gmail SMTP via nodemailer for local dev or a paid
+  // Render plan. See common/mailer/transport.js. Swap this block for AWS SES
+  // once the project moves onto AWS (same DRY_RUN_NOTIFICATIONS gate stays).
+  BREVO_API_KEY: process.env.BREVO_API_KEY || "",
+  GMAIL_USER: process.env.GMAIL_USER || "",
+  GMAIL_APP_PASSWORD: process.env.GMAIL_APP_PASSWORD || "",
   SENDER_EMAIL_ID: process.env.SENDER_EMAIL_ID || "no-reply@example-temple.org",
 
   // Profile image uploads — see common/utils/cloudinary.js and
