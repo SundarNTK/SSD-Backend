@@ -32,10 +32,24 @@ async function login(req, res) {
 
     const user = await findActiveUserByEmail(email);
     // Same message whether the email doesn't exist or the password is wrong —
-    // never reveal which one it was.
+    // never reveal which one it was. A *deactivated* or *access-expired*
+    // account is a different situation on purpose: the person typed their
+    // real password correctly and still can't get in, so "invalid password"
+    // would be actively misleading rather than just unhelpful. Telling them
+    // to contact an admin does mean the response now reveals the email
+    // belongs to a real account — an accepted trade-off for an internal
+    // staff/devotee system, not a public one.
     const genericError = "Invalid email or password.";
 
-    if (!user || !user.isAccountUsable()) throw genericError;
+    if (!user) throw genericError;
+
+    if (user.status !== 1) {
+      throw "This account has been deactivated. Please contact your temple administrator.";
+    }
+    if (user.accessUpto && user.accessUpto.getTime() < Date.now()) {
+      throw "Your access to this account has expired. Please contact your temple administrator.";
+    }
+
     if (!user.passwordHash) {
       throw "This account hasn't set a password yet — please use the activation link sent to your email.";
     }
