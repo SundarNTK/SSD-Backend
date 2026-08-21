@@ -31,6 +31,15 @@ module.exports = {
 
   ADMIN_APP_URL: process.env.ADMIN_APP_URL || "http://localhost:5001",
 
+  // The email header logo. A `localhost` ADMIN_APP_URL can never be reached
+  // by a real mail client (Gmail/Outlook fetch images through their own
+  // servers, not the developer's machine), so this is pinned to a permanent
+  // Cloudinary URL instead — works identically in local dev, on Render, and
+  // after the AWS move. Override only if the logo asset itself changes.
+  EMAIL_LOGO_URL:
+    process.env.EMAIL_LOGO_URL ||
+    "https://res.cloudinary.com/dfh7upn1f/image/upload/v1787328992/ssd-temple/branding/ssd-full-logo.png",
+
   /**
    * DRY_RUN=true (the default) logs every outgoing email/SMS to the console
    * and to /logs instead of actually calling the provider — exactly what's

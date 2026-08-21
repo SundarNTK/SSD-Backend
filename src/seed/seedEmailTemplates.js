@@ -2,10 +2,12 @@ const env = require("../config/env");
 const EmailTemplate = require("../models/email-templates");
 const EmailTemplateMapping = require("../models/email-template-mappings");
 
-// Points at the deployed SSD-Frontend's public/ folder — email clients fetch
-// images over HTTP, so this has to be a real reachable URL, not a local
-// file path. Same approach Syncetra-Backend uses for its own email logo.
-const logoUrl = () => `${(env.ADMIN_APP_URL || "").replace(/\/$/, "")}/SSD_Full_Logo.png`;
+// A permanent Cloudinary URL (see config/env.js) — email clients fetch
+// images over HTTP from their own servers, not the developer's machine, so
+// a `localhost` ADMIN_APP_URL can never load here. Same idea Syncetra-Backend
+// uses for its own email logo, just pinned to a stable asset instead of the
+// frontend origin.
+const logoUrl = () => env.EMAIL_LOGO_URL;
 
 // Same palette as the Admin Panel itself (app/globals.css's --color-* tokens
 // in SSD-Frontend), inlined as literal hex — email clients don't read CSS
@@ -46,14 +48,14 @@ const DEFAULT_TEMPLATES = [
       "Welcome to Sri Siva Durga Temple",
       `<p style="color:#5c4d33;font-size:14.5px;line-height:1.6;">Dear {{name}},</p>
        <p style="color:#5c4d33;font-size:14.5px;line-height:1.6;">
-         Welcome to Sri Siva Durga Temple.
+         We are pleased to welcome you to the Sri Siva Durga Temple community.
        </p>
        <p style="color:#5c4d33;font-size:14.5px;line-height:1.6;">
-         Your account has been created successfully. Please set your password to access your temple account.
+         Your account has been created successfully. Please set your password to get started and access your temple account.
        </p>
        ${buttonHtml("{{activationUrl}}", "Set Your Password")}
        <p style="color:#5c4d33;font-size:14.5px;line-height:1.6;margin-top:28px;">
-         May the blessings of Lord Siva and Goddess Durga always be with you.
+         May the divine blessings of Lord Siva and Goddess Durga be with you and your family always.
        </p>
        <p style="color:#7d6c4d;font-size:12.5px;margin-top:20px;">
          If you did not request this account, you may safely ignore this email.
