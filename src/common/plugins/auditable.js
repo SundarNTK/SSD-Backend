@@ -52,6 +52,20 @@ function auditablePlugin(schema) {
   schema.set("timestamps", true);
   schema.set("versionKey", false);
 
+  // Every list endpoint's default view (see common/factories/crud-controller.js
+  // and utilities/handlers/query-handler) runs exactly `find({ isDeleted:
+  // false }).sort({ createdAt: -1 })`, on every master, every time the "All
+  // statuses" filter is selected — i.e. by default. Without this index that
+  // query is a full collection scan on every single master, because the
+  // per-model `{ status: 1, createdAt: -1 }` indexes only help once a
+  // specific status is also selected. `isDeleted` as the leading key here
+  // both matches that default query directly *and* still serves the
+  // filtered-by-status case (the index provides the sort; status becomes a
+  // cheap residual filter during the scan), so one index — declared once,
+  // for every master — replaces a collection scan with an index scan across
+  // the whole app.
+  schema.index({ isDeleted: 1, createdAt: -1 });
+
   // Every "list active records" query on every master shares this shape —
   // controllers should spread this in rather than writing { isDeleted: false } by hand.
   schema.statics.notDeletedFilter = function notDeletedFilter(extra = {}) {
