@@ -1,6 +1,4 @@
 const express = require("express");
-const authGuard = require("../../common/middleware/auth-guard");
-const adminOnly = require("../../common/middleware/admin-only");
 const requirePermission = require("../../common/middleware/require-permission");
 const validateBody = require("../../common/middleware/validate");
 const makeCrudController = require("../../common/factories/crud-controller");
@@ -78,9 +76,9 @@ async function update(req, res) {
   }
 }
 
-// Mounted at /masters — see routes/index.js.
+// Mounted at /masters — see routes/index.js (authGuard/adminOnly now applied
+// once for the whole /masters group there, not per master).
 const router = express.Router();
-router.use(authGuard, adminOnly);
 
 const crud = makeCrudController(GeneralLedger, { searchFields: ["name", "code"], populate: POPULATE });
 

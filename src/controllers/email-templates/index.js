@@ -1,6 +1,4 @@
 const express = require("express");
-const authGuard = require("../../common/middleware/auth-guard");
-const adminOnly = require("../../common/middleware/admin-only");
 const requirePermission = require("../../common/middleware/require-permission");
 const validateBody = require("../../common/middleware/validate");
 const makeCrudController = require("../../common/factories/crud-controller");
@@ -8,15 +6,11 @@ const makeCrudController = require("../../common/factories/crud-controller");
 const EmailTemplate = require("../../models/email-templates");
 const { createSchema, updateSchema } = require("./request-objects");
 
+// These routes decide what the platform emails people, so they need both
+// userType *and* module gating — applied once for the whole /notifications
+// group in routes/index.js now, not here (see that file's comment for why
+// each router used to apply its own copy).
 const router = express.Router();
-
-/**
- * These routes decide what the platform emails people. Until this gate
- * existed they sat behind `authGuard` alone — meaning any signed-in
- * account, CUSTOMER accounts included, could read every template. Now
- * gated by userType *and* module, same as every other master.
- */
-router.use(authGuard, adminOnly);
 
 const controller = makeCrudController(EmailTemplate, { searchFields: ["name", "subject"] });
 router.get("/email-templates", requirePermission("email-templates", "view"), controller.list);

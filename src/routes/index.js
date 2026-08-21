@@ -1,4 +1,6 @@
 const express = require("express");
+const authGuard = require("../common/middleware/auth-guard");
+const adminOnly = require("../common/middleware/admin-only");
 const authRoutes = require("../controllers/auth");
 const emailTemplateRoutes = require("../controllers/email-templates");
 const emailTemplateMappingRoutes = require("../controllers/email-template-mappings");
@@ -45,30 +47,62 @@ router.get("/health", (req, res) => res.json({ ok: true, service: "SSD-Backend" 
  * applies to that sub-router's paths and nothing else.
  */
 router.use("/auth", authRoutes); // public + token-holder routes
-router.use("/notifications", emailTemplateRoutes); // admin-side: email template master
-router.use("/notifications", emailTemplateMappingRoutes); // admin-side: email template mapping master
+
+/**
+ * `authGuard` + `adminOnly` applied ONCE here, for the whole group — not
+ * inside each individual master's own controller file.
+ *
+ * Every master under /masters (and both routers under /notifications) used
+ * to call `router.use(authGuard, adminOnly)` at its own top. That looked
+ * safe in isolation, but every one of those routers is mounted at the exact
+ * same prefix below, and Express doesn't stop at the first one that doesn't
+ * match a route — it falls through to the next `router.use("/masters", X)`
+ * in this list. `authGuard` and `adminOnly` are still just middleware, and
+ * middleware attached via a path-less `router.use()` runs for *any* request
+ * that reaches that router, whether or not that router turns out to have a
+ * matching route. So a single request to `GET /masters/items` was running
+ * `authGuard` — a real database round-trip to re-read the account and its
+ * roles — once for every OTHER masters router mounted before `itemRoutes`
+ * in this list, not once. With thirteen routers sharing the /masters
+ * prefix, that's up to twelve wasted database round-trips before the
+ * request ever reached the code that actually answers it, and it only got
+ * worse the later a master sits in this list (Payment Mode, last in line,
+ * paid for all twelve of the others). Grouping the shared prefix under one
+ * router with the guard applied once fixes this for every master at once,
+ * structurally, rather than needing to remember it per file.
+ *
+ * `/users`, `/roles`, and `/customers` are NOT part of this — each of those
+ * is the only router mounted at its prefix, so they never had this problem,
+ * and keep their own `authGuard`/`adminOnly` exactly as before.
+ */
+const notificationsRouter = express.Router();
+notificationsRouter.use(authGuard, adminOnly);
+notificationsRouter.use(emailTemplateRoutes); // admin-side: email template master
+notificationsRouter.use(emailTemplateMappingRoutes); // admin-side: email template mapping master
+router.use("/notifications", notificationsRouter);
+
 router.use("/roles", roleRoutes); // admin-side: role master, permissions, module list
 router.use("/users", userRoutes); // admin-side: user master
 router.use("/customers", customerAdminRoutes); // admin-side: devotee master
 router.use("/me", customerProfileRoutes); // customer-side: the caller's own devotee profile
 
-// Reserved namespaces — real masters/POS/inventory/payments/reports modules
-// mount here as they're built (see DashboardPage's "Coming up" list). Each
-// is a working health-check router today, not a placeholder file, so every
-// folder under controllers/ does something rather than sitting empty.
-router.use("/masters", mastersRoutes);
-router.use("/masters", printingGroupRoutes);
-router.use("/masters", gstRoutes);
-router.use("/masters", glGroupRoutes);
-router.use("/masters", deityRoutes);
-router.use("/masters", generalLedgerRoutes);
-router.use("/masters", categoryRoutes);
-router.use("/masters", subCategoryRoutes);
-router.use("/masters", itemRoutes);
-router.use("/masters", serviceRoutes);
-router.use("/masters", eventRoutes);
-router.use("/masters", nakshathiramRoutes);
-router.use("/masters", paymentModeRoutes);
+const mastersRouter = express.Router();
+mastersRouter.use(authGuard, adminOnly);
+mastersRouter.use(mastersRoutes);
+mastersRouter.use(printingGroupRoutes);
+mastersRouter.use(gstRoutes);
+mastersRouter.use(glGroupRoutes);
+mastersRouter.use(deityRoutes);
+mastersRouter.use(generalLedgerRoutes);
+mastersRouter.use(categoryRoutes);
+mastersRouter.use(subCategoryRoutes);
+mastersRouter.use(itemRoutes);
+mastersRouter.use(serviceRoutes);
+mastersRouter.use(eventRoutes);
+mastersRouter.use(nakshathiramRoutes);
+mastersRouter.use(paymentModeRoutes);
+router.use("/masters", mastersRouter);
+
 router.use("/pos", posRoutes);
 router.use("/inventory", inventoryRoutes);
 router.use("/payments", paymentsRoutes);

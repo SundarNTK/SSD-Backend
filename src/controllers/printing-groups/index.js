@@ -1,6 +1,4 @@
 const express = require("express");
-const authGuard = require("../../common/middleware/auth-guard");
-const adminOnly = require("../../common/middleware/admin-only");
 const requirePermission = require("../../common/middleware/require-permission");
 const validateBody = require("../../common/middleware/validate");
 const makeCrudController = require("../../common/factories/crud-controller");
@@ -9,10 +7,10 @@ const PrintingGroup = require("../../models/printing-groups");
 const { createSchema, updateSchema } = require("./request-objects");
 
 // Mounted at /masters alongside every other master controller — see
-// routes/index.js. Own path segment here, same as
-// controllers/email-templates does under the shared /notifications prefix.
+// routes/index.js, where authGuard/adminOnly are now applied once for the
+// whole /masters group (same for controllers/email-templates under the
+// shared /notifications prefix), not per master.
 const router = express.Router();
-router.use(authGuard, adminOnly);
 
 const crud = makeCrudController(PrintingGroup, { searchFields: ["name", "description"] });
 
