@@ -46,16 +46,21 @@ services:
       # link to ${ADMIN_APP_URL}/admin/activate/:token etc.
       - key: ADMIN_APP_URL
         sync: false
-      # Set to "false" once a real SES identity is verified and
-      # AWS_ACCESS_KEY/AWS_SECRET_KEY/SENDER_EMAIL_ID below are filled in.
-      # Until then this stays "true" and emails are only logged, never sent.
+      # Set to "false" once BREVO_API_KEY (or GMAIL_USER/GMAIL_APP_PASSWORD)
+      # and SENDER_EMAIL_ID below are filled in. Until then this stays
+      # "true" and emails are only logged, never sent.
       - key: DRY_RUN_NOTIFICATIONS
         value: "true"
-      - key: AWS_REGION
-        value: ap-southeast-1
-      - key: AWS_ACCESS_KEY
+      # Same dual-provider approach as Syncetra-Backend: Brevo's HTTP API
+      # first (Gmail SMTP is blocked outbound on Render's free tier),
+      # falling back to Gmail SMTP for a paid plan. Fill in ONE of the two
+      # pairs below. Swap this block for AWS SES once the project moves
+      # onto AWS.
+      - key: BREVO_API_KEY
         sync: false
-      - key: AWS_SECRET_KEY
+      - key: GMAIL_USER
+        sync: false
+      - key: GMAIL_APP_PASSWORD
         sync: false
       - key: SENDER_EMAIL_ID
         sync: false
