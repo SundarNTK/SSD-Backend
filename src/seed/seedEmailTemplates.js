@@ -1,5 +1,11 @@
+const env = require("../config/env");
 const EmailTemplate = require("../models/email-templates");
 const EmailTemplateMapping = require("../models/email-template-mappings");
+
+// Points at the deployed SSD-Frontend's public/ folder — email clients fetch
+// images over HTTP, so this has to be a real reachable URL, not a local
+// file path. Same approach Syncetra-Backend uses for its own email logo.
+const logoUrl = () => `${(env.ADMIN_APP_URL || "").replace(/\/$/, "")}/SSD_Full_Logo.png`;
 
 // Same palette as the Admin Panel itself (app/globals.css's --color-* tokens
 // in SSD-Frontend), inlined as literal hex — email clients don't read CSS
@@ -10,7 +16,11 @@ const baseWrap = (title, bodyHtml) => `
       <tr><td align="center">
         <table role="presentation" width="480" cellpadding="0" cellspacing="0"
           style="background:#ffffff;border:1px solid #d4af3740;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(42,32,19,0.08);">
-          <tr><td style="padding:32px 36px;">
+          <tr><td style="padding:28px 36px 4px;text-align:center;">
+            <img src="${logoUrl()}" alt="Sri Siva Durga Temple" width="160"
+              style="display:inline-block;max-width:160px;width:160px;height:auto;border:0;outline:none;text-decoration:none;" />
+          </td></tr>
+          <tr><td style="padding:16px 36px 32px;">
             <p style="color:#96691b;letter-spacing:3px;font-size:11px;text-transform:uppercase;margin:0 0 8px;">
               Sri Siva Durga Temple
             </p>
@@ -33,14 +43,23 @@ const DEFAULT_TEMPLATES = [
     event: "ACCOUNT_ACTIVATION",
     subject: "Set your password — Sri Siva Durga Temple",
     htmlContent: baseWrap(
-      "Welcome to the Temple",
-      `<p style="color:#5c4d33;font-size:14.5px;line-height:1.6;">Namaste {{name}},</p>
+      "Welcome to Sri Siva Durga Temple",
+      `<p style="color:#5c4d33;font-size:14.5px;line-height:1.6;">Dear {{name}},</p>
        <p style="color:#5c4d33;font-size:14.5px;line-height:1.6;">
-         An account has been created for you. Set your password to continue.
+         Welcome to Sri Siva Durga Temple.
+       </p>
+       <p style="color:#5c4d33;font-size:14.5px;line-height:1.6;">
+         Your account has been created successfully. Please set your password to access your temple account.
        </p>
        ${buttonHtml("{{activationUrl}}", "Set Your Password")}
-       <p style="color:#7d6c4d;font-size:12.5px;margin-top:24px;">
-         This link stays valid until you use it, and works only once. If you weren't expecting this, you can ignore it.
+       <p style="color:#5c4d33;font-size:14.5px;line-height:1.6;margin-top:28px;">
+         May the blessings of Lord Siva and Goddess Durga always be with you.
+       </p>
+       <p style="color:#7d6c4d;font-size:12.5px;margin-top:20px;">
+         If you did not request this account, you may safely ignore this email.
+       </p>
+       <p style="color:#7d6c4d;font-size:12px;margin-top:24px;border-top:1px solid #ede2c8;padding-top:16px;">
+         Sri Siva Durga Temple<br/>Singapore
        </p>`
     ),
   },
