@@ -148,11 +148,14 @@ async function history(req, res) {
     const pageSize = Math.min(100, Number(req.query.pageSize) || 20);
     const filter = {};
 
+    const refType = req.query.refType; // "Item" | "Service" | undefined
+    if (refType === "Item" || refType === "Service") filter.refType = refType;
+
     if (req.query.search) {
       const regex = searchRegex(req.query.search);
       const [matchingItems, matchingServices] = await Promise.all([
-        Item.find({ isDeleted: false, $or: [{ name: regex }, { code: regex }] }).select("_id"),
-        Service.find({ isDeleted: false, $or: [{ name: regex }, { code: regex }] }).select("_id"),
+        refType === "Service" ? [] : Item.find({ isDeleted: false, $or: [{ name: regex }, { code: regex }] }).select("_id"),
+        refType === "Item" ? [] : Service.find({ isDeleted: false, $or: [{ name: regex }, { code: regex }] }).select("_id"),
       ]);
       filter.refId = { $in: [...matchingItems, ...matchingServices].map((r) => r._id) };
     }
