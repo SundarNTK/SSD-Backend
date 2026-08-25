@@ -38,6 +38,10 @@ const serviceSchema = new mongoose.Schema({
 
   isInventoryRequired: { type: Boolean, default: false },
   thresholdCount: { type: Number, default: 0 },
+  // Live on-hand quantity — moved only by POST /inventory/adjustments
+  // (models/inventory-adjustments), never edited directly through the
+  // Service master form.
+  currentStock: { type: Number, default: 0, min: 0 },
 
   bookingCutoffDate: { type: Date, default: null },
   isPosAvailable: { type: Boolean, default: true },

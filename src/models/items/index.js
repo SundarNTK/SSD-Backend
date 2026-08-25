@@ -34,6 +34,10 @@ const itemSchema = new mongoose.Schema({
   minQuantity: { type: Number, default: 1 },
   maxQuantity: { type: Number, default: 0 }, // 0 = unlimited, matching the reference screenshot's "0 - unlimited" note
   quantityReduction: { type: Number, default: 1 },
+  // Live on-hand quantity — moved only by POST /inventory/adjustments
+  // (models/inventory-adjustments), never edited directly through the Item
+  // master form.
+  currentStock: { type: Number, default: 0, min: 0 },
 
   futureBookingCutOffDate: { type: Date, default: null },
   isFamilyMembersRequired: { type: Boolean, default: false },
