@@ -34,7 +34,11 @@ const createSchema = Joi.object({
 
   isFamilyMembersRequired: Joi.boolean().default(false),
   minFamilyMembers: Joi.number().integer().min(0).default(1),
-  maxFamilyMembers: Joi.number().integer().min(0).default(1),
+  maxFamilyMembers: Joi.number()
+    .integer()
+    .min(Joi.ref("minFamilyMembers"))
+    .default(1)
+    .messages({ "number.min": "Maximum family members can't be less than the minimum." }),
 
   sessionRequired: Joi.boolean().default(false),
 
@@ -63,7 +67,10 @@ const updateSchema = Joi.object({
 
   isFamilyMembersRequired: Joi.boolean(),
   minFamilyMembers: Joi.number().integer().min(0),
-  maxFamilyMembers: Joi.number().integer().min(0),
+  maxFamilyMembers: Joi.number()
+    .integer()
+    .min(Joi.ref("minFamilyMembers"))
+    .messages({ "number.min": "Maximum family members can't be less than the minimum." }),
 
   sessionRequired: Joi.boolean(),
 
