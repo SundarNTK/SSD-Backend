@@ -963,3 +963,9 @@ booking.post(
 router.use("/booking", booking);
 
 module.exports = router;
+// Exposed for unit testing (src/controllers/pos/__tests__) — the router
+// object is a function, so these are just extra properties on it and don't
+// change how routes/index.js consumes the default export.
+module.exports.createOrder = createOrder;
+module.exports.confirmOrder = confirmOrder;
+module.exports.effectiveQuantity = effectiveQuantity;
