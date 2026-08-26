@@ -121,7 +121,7 @@ async function list(req, res) {
 async function create(req, res) {
   let createdUser = null;
   try {
-    const { name, email, mobileNumber, roleIds, accessUpto, status, profileImage } = req.body;
+    const { name, email, mobileNumber, roleIds, accessUpto, status, profileImage, posAccess } = req.body;
 
     await resolveAssignableRoles(req, roleIds);
 
@@ -139,6 +139,7 @@ async function create(req, res) {
       profileImage: profileImage || null,
       status: status === undefined ? 1 : status,
       accessUpto: accessUpto || null,
+      posAccess: posAccess === undefined ? false : posAccess,
     });
     createdUser = user;
 
@@ -174,7 +175,7 @@ async function update(req, res) {
     const user = await User.findOne(User.notDeletedFilter({ _id: req.params.id }));
     if (!user) return exceptionHandler({ res, error: "User not found.", statusCode: 404 });
 
-    const { name, email, mobileNumber, roleIds, accessUpto, status, profileImage } = req.body;
+    const { name, email, mobileNumber, roleIds, accessUpto, status, profileImage, posAccess } = req.body;
     const isSelf = String(user._id) === String(req.auth?.userId);
 
     // A System Admin account is only ever editable by another System Admin —
@@ -222,6 +223,7 @@ async function update(req, res) {
     if (profileImage) user.profileImage = profileImage;
     if (accessUpto !== undefined) user.accessUpto = accessUpto;
     if (status !== undefined) user.status = status;
+    if (posAccess !== undefined) user.posAccess = posAccess;
 
     user.updatedBy = req.auth?.userId || null;
     await user.save();

@@ -8,7 +8,7 @@
     "start": "node src/server.js",
     "seed:super-admin": "node src/seed/seedSuperAdmin.js",
     "create:super-admin": "node src/seed/createSuperAdmin.js",
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "jest",
     "sync:pools": "node src/seed/syncPools.js",
     "seed:payment-modes": "node src/seed/seedPaymentModes.js",
     "migrate": "node src/seed/migrate.js"
@@ -39,6 +39,7 @@
     "zxcvbn": "^4.4.2"
   },
   "devDependencies": {
+    "jest": "^30.4.2",
     "nodemon": "^3.1.14"
   }
 }

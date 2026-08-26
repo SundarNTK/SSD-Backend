@@ -24,6 +24,7 @@ const itemSchema = new mongoose.Schema({
   description: { type: String, default: "" },
 
   isDeityMappingRequired: { type: Boolean, default: false },
+  deityMapping: { type: [{ type: mongoose.Schema.Types.ObjectId, ref: "Deity" }], default: [] },
   printingGroup: { type: mongoose.Schema.Types.ObjectId, ref: "PrintingGroup", required: true },
 
   categoryDetails: { type: [categoryDetailSchema], default: [] },
@@ -34,9 +35,14 @@ const itemSchema = new mongoose.Schema({
   minQuantity: { type: Number, default: 1 },
   maxQuantity: { type: Number, default: 0 }, // 0 = unlimited, matching the reference screenshot's "0 - unlimited" note
   quantityReduction: { type: Number, default: 1 },
+  // Live on-hand quantity — moved only by POST /inventory/adjustments
+  // (models/inventory-adjustments), never edited directly through the Item
+  // master form.
+  currentStock: { type: Number, default: 0, min: 0 },
 
   futureBookingCutOffDate: { type: Date, default: null },
   isFamilyMembersRequired: { type: Boolean, default: false },
+  maxFamilyMembers: { type: Number, default: 2 },
   posAvailability: { type: Boolean, default: true },
   customerPortalAvailability: { type: Boolean, default: true },
 });
@@ -52,6 +58,7 @@ itemSchema.index({ status: 1, createdAt: -1 });
 // screen (and the POS/customer-portal browsing screens) will filter by.
 itemSchema.index({ generalLedger: 1 });
 itemSchema.index({ printingGroup: 1 });
+itemSchema.index({ deityMapping: 1 });
 itemSchema.index({ "categoryDetails.category": 1 });
 itemSchema.index({ "categoryDetails.subCategory": 1 });
 

@@ -11,12 +11,27 @@ const categoryDetailEntry = Joi.object({
 
 // deityMapping is only meaningful (and only required) once
 // isDeityMappingRequired is turned on — otherwise it's cleared to [].
+// Create always sends a full object, so a missing key safely defaults to [].
+// Update must NOT apply that default: validateBody() fills in .default()
+// for any key absent from the request body, and crud.update() spreads the
+// whole validated body into findOneAndUpdate — so a partial PUT that
+// doesn't mention deityMapping would silently blank out an existing
+// mapping. Leaving it undefined on update means "not part of this PUT",
+// so the existing value in the DB is left untouched.
 const deityMappingField = Joi.array()
   .items(objectId)
   .when("isDeityMappingRequired", {
     is: true,
     then: Joi.array().min(1).required(),
     otherwise: Joi.array().default([]),
+  });
+
+const deityMappingFieldForUpdate = Joi.array()
+  .items(objectId)
+  .when("isDeityMappingRequired", {
+    is: true,
+    then: Joi.array().min(1).required(),
+    otherwise: Joi.array(),
   });
 
 const createSchema = Joi.object({
@@ -33,12 +48,7 @@ const createSchema = Joi.object({
   generalLedger: objectId.required(),
 
   isFamilyMembersRequired: Joi.boolean().default(false),
-  minFamilyMembers: Joi.number().integer().min(0).default(1),
-  maxFamilyMembers: Joi.number()
-    .integer()
-    .min(Joi.ref("minFamilyMembers"))
-    .default(1)
-    .messages({ "number.min": "Maximum family members can't be less than the minimum." }),
+  maxFamilyMembers: Joi.number().integer().min(1).default(2),
 
   sessionRequired: Joi.boolean().default(false),
 
@@ -59,18 +69,14 @@ const updateSchema = Joi.object({
   description: Joi.string().allow(""),
 
   isDeityMappingRequired: Joi.boolean(),
-  deityMapping: deityMappingField,
+  deityMapping: deityMappingFieldForUpdate,
 
   categoryDetails: Joi.array().items(categoryDetailEntry),
 
   generalLedger: objectId,
 
   isFamilyMembersRequired: Joi.boolean(),
-  minFamilyMembers: Joi.number().integer().min(0),
-  maxFamilyMembers: Joi.number()
-    .integer()
-    .min(Joi.ref("minFamilyMembers"))
-    .messages({ "number.min": "Maximum family members can't be less than the minimum." }),
+  maxFamilyMembers: Joi.number().integer().min(1),
 
   sessionRequired: Joi.boolean(),
 

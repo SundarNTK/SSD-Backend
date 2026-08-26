@@ -10,6 +10,7 @@
  *   3. `uCode` backfilled on users, and the counter advanced past them
  *   4. activation invitations that were issued with an expiry made permanent
  *   5. indexes resynced
+ *   6. `portal` backfilled on Order/Booking rows that predate the field
  */
 require("dotenv").config();
 const mongoose = require("mongoose");
@@ -23,6 +24,8 @@ const { Customer } = require("../models/customers");
 const Role = require("../models/roles");
 const EmailTemplate = require("../models/email-templates");
 const EmailTemplateMapping = require("../models/email-template-mappings");
+const { Order } = require("../models/orders");
+const { Booking } = require("../models/bookings");
 
 // Entity is excluded on purpose: it carries its own UUID `uid` predating the
 // shared 10-character format, and rewriting it would break any reference.
@@ -97,6 +100,20 @@ async function makeInvitationsPermanent() {
   console.log(`  ${result.modifiedCount} pending invitation(s) no longer expire`);
 }
 
+async function backfillBookingPortal() {
+  // Every Order/Booking predating this field was created through the same
+  // staff-gated /pos/booking/orders endpoint — no other flow has ever
+  // existed — so backfilling "admin" is unambiguously correct, not a guess.
+  // A raw {portal: "admin"} filter query wouldn't match these rows even
+  // though Mongoose shows "admin" on read (the schema's declared default,
+  // applied only at hydration, not stored) — this backfill closes that gap.
+  const orderResult = await Order.updateMany({ portal: { $exists: false } }, { $set: { portal: "admin" } });
+  console.log(`  Order: ${orderResult.modifiedCount} row(s) backfilled to portal="admin"`);
+
+  const bookingResult = await Booking.updateMany({ portal: { $exists: false } }, { $set: { portal: "admin" } });
+  console.log(`  Booking: ${bookingResult.modifiedCount} row(s) backfilled to portal="admin"`);
+}
+
 async function run() {
   await connectDatabase();
 
@@ -127,6 +144,9 @@ async function run() {
     await Model.syncIndexes();
     console.log(`  ${label}: indexes synced`);
   }
+
+  console.log("\n>>> 6. Backfilling portal on Order/Booking");
+  await backfillBookingPortal();
 
   console.log("\n>>> Migration complete.\n");
   process.exit(0);
