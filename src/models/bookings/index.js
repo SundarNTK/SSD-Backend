@@ -42,6 +42,10 @@ const bookingLineSchema = new mongoose.Schema(
 
 const BOOKING_STATUSES = ["confirmed", "cancelled"];
 
+// Re-import from orders so both collections share the same constant and
+// stay in sync when a new portal surface is added.
+const { PORTAL_TYPES } = require("../orders");
+
 const bookingSchema = new mongoose.Schema({
   bookingNumber: { type: String, required: true },
   orderId: { type: mongoose.Schema.Types.ObjectId, ref: "Order", required: true },
@@ -60,9 +64,8 @@ const bookingSchema = new mongoose.Schema({
   bookingStatus: { type: String, enum: BOOKING_STATUSES, default: "confirmed" },
 
   // Copied from the originating Order at confirm time — which surface
-  // (staff-driven "admin" vs a future self-service "customer" flow)
-  // created this booking.
-  portal: { type: String, enum: ["admin", "customer"], default: "admin" },
+  // (Admin Panel, POS counter, or future Customer Portal) created this booking.
+  portal: { type: String, enum: PORTAL_TYPES, default: "admin" },
 
   bookedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
   entity: { type: mongoose.Schema.Types.ObjectId, default: null },
