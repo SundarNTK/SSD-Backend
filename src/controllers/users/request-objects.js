@@ -32,6 +32,13 @@ const roleIdsField = Joi.alternatives()
   .default([])
   .messages({ "any.invalid": "Roles must be a list of role ids." });
 
+// Booleans arrive as the string "true"/"false" whenever the form is
+// submitted as multipart (same reason roleIdsField accepts a JSON string —
+// a profile image forces multipart, which flattens everything to strings).
+const posAccessField = Joi.alternatives().try(Joi.boolean(), Joi.string().valid("true", "false")).custom((value) =>
+  value === "true" ? true : value === "false" ? false : value
+);
+
 const createSchema = Joi.object({
   name: Joi.string().trim().min(2).max(100).required(),
   email: Joi.string().trim().email({ tlds: false }).required(),
@@ -40,6 +47,7 @@ const createSchema = Joi.object({
   accessUpto: Joi.date().iso().allow(null, "").default(null),
   status: Joi.number().valid(0, 1).default(1),
   profileImage: Joi.string().allow(null, "").default(null),
+  posAccess: posAccessField.default(false),
 });
 
 const updateSchema = Joi.object({
@@ -50,6 +58,7 @@ const updateSchema = Joi.object({
   accessUpto: Joi.date().iso().allow(null, ""),
   status: Joi.number().valid(0, 1),
   profileImage: Joi.string().allow(null, ""),
+  posAccess: posAccessField,
 });
 
 module.exports = { createSchema, updateSchema };

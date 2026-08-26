@@ -41,6 +41,13 @@ const userSchema = new mongoose.Schema({
 
   accessUpto: { type: Date, default: null },
 
+  // Separate from the role/permission system on purpose — "can reach the
+  // admin-booking APIs" (a role grant) and "is allowed to physically use
+  // the POS counter terminal" (this flag) are different questions. A user
+  // can hold full admin-booking permissions and still have this off; the
+  // POS login screen and every /pos/booking/* route both check it.
+  posAccess: { type: Boolean, default: false },
+
   // --- activation (first "set your password" link) ---
   //
   // `activationTokenExpiresAt` is null for accounts created from the User
@@ -106,6 +113,7 @@ userSchema.methods.toSessionUser = function toSessionUser() {
     email: this.email,
     userType: this.userType,
     profileImage: this.profileImage,
+    posAccess: this.posAccess,
     entityId: defaultAssignment ? String(defaultAssignment.entity) : null,
   };
 };
