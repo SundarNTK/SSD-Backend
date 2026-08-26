@@ -21,6 +21,7 @@ const serviceRoutes = require("../controllers/services");
 const eventRoutes = require("../controllers/events");
 const nakshathiramRoutes = require("../controllers/nakshathirams");
 const paymentModeRoutes = require("../controllers/payment-modes");
+const translateRoutes = require("../controllers/translate");
 const posRoutes = require("../controllers/pos");
 const inventoryRoutes = require("../controllers/inventory");
 const paymentsRoutes = require("../controllers/payments");
@@ -101,6 +102,7 @@ mastersRouter.use(serviceRoutes);
 mastersRouter.use(eventRoutes);
 mastersRouter.use(nakshathiramRoutes);
 mastersRouter.use(paymentModeRoutes);
+mastersRouter.use(translateRoutes);
 router.use("/masters", mastersRouter);
 
 router.use("/pos", posRoutes);

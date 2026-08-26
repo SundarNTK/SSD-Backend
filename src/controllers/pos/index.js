@@ -2,21 +2,32 @@
  * POS / Admin Booking controller
  * Mounted at /pos — see routes/index.js.
  *
- * Endpoints:
+ * The same handler set is registered on two route trees, one per calling
+ * surface, so the portal stamp on every Order/Booking/Transaction can be
+ * derived server-side from the route rather than trusted from the client
+ * body (see setPortal()/registerBookingRoutes() near the bottom):
  *
- *   GET  /pos/booking/customers/search?query=          — quick customer lookup
- *   POST /pos/booking/customers                        — create a walk-in devotee profile
- *   GET  /pos/booking/items?search=&category=&subCategory=    — POS item picker
- *   GET  /pos/booking/services?search=&category=&subCategory= — POS service picker
- *   GET  /pos/booking/catalogue                        — category tabs + sub-category folders
- *   GET  /pos/booking/deities                          — active deity roster
- *   GET  /pos/booking/nakshathirams                    — active nakshathiram roster
- *   GET  /pos/booking/payment-modes                    — active payment modes
- *   POST /pos/booking/summary                          — price + availability calc (no writes)
- *   POST /pos/booking/orders                            — create order + reserve inventory
- *   POST /pos/booking/orders/:id/confirm                — confirm order → booking + stock-out
- *   GET  /pos/booking/bookings?search=&status=&portal=  — POS Transactions ledger
- *   GET  /pos/booking/bookings/:id                      — full booking detail
+ *   /pos/booking/*        — POS Portal counter terminal → portal: "pos"
+ *   /pos/admin/booking/*  — Admin Panel booking screen  → portal: "admin"
+ *
+ * Endpoints (identical shape under either prefix above):
+ *
+ *   GET  /customers/search?query=          — quick customer lookup
+ *   GET  /customers/lookup?mobileNumber=   — exact match on an unregistered walk-in, for Create Customer auto-fill
+ *   POST /customers                        — create a walk-in devotee profile (isRegistered: false)
+ *   GET  /customers/:id/recent-bookings    — last N confirmed bookings, for "repeat a past booking"
+ *   GET  /items?search=&category=&subCategory=    — POS item picker
+ *   GET  /services?search=&category=&subCategory= — POS service picker
+ *   GET  /catalogue                        — category tabs + sub-category folders
+ *   GET  /deities                          — active deity roster
+ *   GET  /nakshathirams                    — active nakshathiram roster
+ *   GET  /payment-modes                    — active payment modes
+ *   POST /summary                          — price + availability calc (no writes)
+ *   POST /recheck-lines                    — re-validate past lines against the live catalogue
+ *   POST /orders                           — create order + reserve inventory
+ *   POST /orders/:id/confirm               — confirm order → Booking + Transaction + stock-out
+ *   GET  /bookings?search=&status=&portal= — POS Transactions ledger
+ *   GET  /bookings/:id                     — full booking + transaction detail
  *
  * Inventory reservation lifecycle: see inventory-reservation.js.
  */
@@ -58,6 +69,7 @@ const {
   confirmOrderSchema,
   customerSearchSchema,
   createCustomerSchema,
+  recheckLinesSchema,
 } = require("./request-objects");
 
 const mongoose = require("mongoose");
@@ -171,7 +183,7 @@ async function createWalkInCustomer(req, res) {
     const { error, value } = createCustomerSchema.validate(req.body);
     if (error) throw error.details[0].message;
 
-    const { name, email, mobileNumber } = value;
+    const { name, email, mobileNumber, dateOfBirth, gender } = value;
 
     const emailTaken = await Customer.exists(Customer.notDeletedFilter({ email }));
     if (emailTaken) throw "A devotee profile already uses this email.";
@@ -183,7 +195,19 @@ async function createWalkInCustomer(req, res) {
     const entityId = req.auth?.entityId || (await Entity.findOne({ code: env.DEFAULT_ENTITY_CODE }))?._id;
     if (!entityId) throw "No temple entity is configured.";
 
-    const customer = await createCustomerProfile({ entityId, name, email, mobileNumber: mobileNumber || null });
+    const customer = await createCustomerProfile({
+      entityId,
+      name,
+      email,
+      mobileNumber: mobileNumber || null,
+      dateOfBirth: dateOfBirth || null,
+      gender: gender || null,
+      // A walk-in starts unregistered — see models/customers' own comment.
+      // A repeat visit on the same mobile is matched and reused (GET
+      // .../customers/lookup) rather than hitting the mobile-uniqueness
+      // error below a second time.
+      isRegistered: false,
+    });
     customer.createdBy = req.auth?.userId || null;
     await customer.save();
 
@@ -192,6 +216,65 @@ async function createWalkInCustomer(req, res) {
     if (error?.code === 11000) {
       return exceptionHandler({ res, error: "Those details are already used by another profile.", statusCode: 409 });
     }
+    return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 400 : undefined });
+  }
+}
+
+/**
+ * GET /pos/booking/customers/lookup?mobileNumber=
+ * Exact-match lookup for the Create Customer form's auto-fill — as the
+ * counter types a mobile number, this finds a matching *unregistered*
+ * walk-in profile so a repeat visit reuses it instead of hitting the
+ * mobile-uniqueness error on a second POST. Scoped to isRegistered: false
+ * on purpose: a real registration is never silently pulled into the walk-in
+ * create form this way — reusing one of those goes through customer search.
+ */
+async function lookupCustomerByMobile(req, res) {
+  try {
+    const mobileNumber = (req.query.mobileNumber || "").trim();
+    if (!mobileNumber) return responseHandler({ res, response: null });
+
+    const customer = await Customer.findOne(
+      Customer.notDeletedFilter({ mobileNumber, status: 1, isRegistered: false })
+    ).select("customerCode name email mobileNumber dateOfBirth gender");
+
+    return responseHandler({ res, response: customer });
+  } catch (error) {
+    return exceptionHandler({ res, error });
+  }
+}
+
+/**
+ * GET /pos/booking/customers/:id/recent-bookings?limit=3
+ * The counter's "repeat a past booking" feature — last N confirmed
+ * bookings for a customer, with full line detail so the frontend can offer
+ * to re-add them to the cart (after re-checking live availability via
+ * recheckLines(), since the catalogue may have moved on since then).
+ */
+async function getRecentBookings(req, res) {
+  try {
+    const customerId = req.params.id;
+    if (!mongoose.isValidObjectId(customerId)) throw "Invalid customer ID.";
+    const limit = Math.min(10, Math.max(1, Number(req.query.limit) || 3));
+
+    const bookings = await Booking.find({ customer: customerId, bookingStatus: "confirmed" })
+      .select("bookingNumber orderId lines grandTotal bookedAt")
+      .populate("orderId", "orderNumber")
+      .populate("lines.deities", "name")
+      .sort({ bookedAt: -1 })
+      .limit(limit);
+
+    const items = bookings.map((b) => ({
+      _id: b._id,
+      bookingNumber: b.bookingNumber,
+      orderNumber: b.orderId?.orderNumber ?? null,
+      lines: b.lines,
+      grandTotal: b.grandTotal,
+      bookedAt: b.bookedAt,
+    }));
+
+    return responseHandler({ res, response: { items } });
+  } catch (error) {
     return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 400 : undefined });
   }
 }
@@ -646,6 +729,67 @@ async function bookingSummary(req, res) {
   }
 }
 
+/**
+ * POST /pos/booking/recheck-lines
+ *
+ * Same per-line lookups as bookingSummary(), but tolerant — used by the
+ * "repeat a past booking" flow, where some lines from an old order may no
+ * longer be valid (deactivated, no longer POS-available, or genuinely out
+ * of stock) while others still are. Unlike bookingSummary(), a bad line
+ * never throws; it comes back with `available: false` and a reason so the
+ * caller can offer "add just the available ones" instead of an all-or-
+ * nothing failure.
+ */
+async function recheckLines(req, res) {
+  try {
+    const { error, value } = recheckLinesSchema.validate(req.body);
+    if (error) throw error.details[0].message;
+
+    const results = await Promise.all(
+      value.lines.map(async (line) => {
+        const { refType, refId, quantity, deities, devotees } = line;
+        const base = { refType, refId, quantity, deities, devotees };
+
+        let name, code, unitPrice;
+        if (refType === "Item") {
+          const item = await Item.findOne(Item.notDeletedFilter({ _id: refId, status: 1, posAvailability: true }));
+          if (!item) return { ...base, available: false, reason: "No longer available for sale." };
+          name = item.name;
+          code = item.code;
+          unitPrice = item.salePrice;
+        } else {
+          const svc = await Service.findOne(Service.notDeletedFilter({ _id: refId, status: 1, isPosAvailable: true }));
+          if (!svc) return { ...base, available: false, reason: "No longer available for sale." };
+          name = svc.name;
+          code = svc.code;
+          unitPrice = svc.categoryDetails[0]?.salePrice ?? 0;
+        }
+
+        const qty = effectiveQuantity(line);
+        const avail = await getAvailability(refType, refId);
+        if (avail.isInventoryApplicable && qty > avail.availableQty) {
+          return {
+            ...base,
+            available: false,
+            name,
+            code,
+            reason:
+              avail.availableQty > 0
+                ? `Only ${avail.availableQty} available (need ${qty}).`
+                : "Out of stock.",
+          };
+        }
+
+        return { ...base, available: true, name, code, unitPrice, lineTotal: +(unitPrice * qty).toFixed(2), quantity: qty };
+      })
+    );
+
+    return responseHandler({ res, response: { lines: results } });
+  } catch (error) {
+    return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 400 : undefined });
+  }
+}
+
 // ─── create order ─────────────────────────────────────────────────────────────
 
 /**
@@ -796,21 +940,24 @@ async function createOrder(req, res) {
  * POST /pos/booking/orders/:id/confirm
  *
  * 1. Verify the order is still pending and not expired.
- * 2. Write the Booking (permanent confirmed record) + Transaction (payment/
- *    receipt record) + mark the Order confirmed, all inside one MongoDB
- *    transaction — either all three land or none do, so a mid-write crash
- *    can never leave a Booking with no matching Transaction, or an Order
- *    marked confirmed with no Booking behind it.
+ * 2. Write the Booking (permanent confirmed record), then the Transaction
+ *    (payment/receipt record), then mark the Order confirmed — plain
+ *    sequential writes, not a MongoDB multi-document transaction. A
+ *    transaction was tried here first for atomicity, but it measurably
+ *    added latency (its own start/commit round trips on top of an already
+ *    slow shared Atlas cluster — this was the actual cause of "Confirm
+ *    Booking" stalling in the browser). For this system's scale, a crash
+ *    landing exactly between these three writes is rare enough that a
+ *    best-effort cleanup (delete whatever landed, then re-throw so the
+ *    order stays retryable) is the better trade than paying transaction
+ *    overhead on every single booking.
  * 3. consumeReservations() — permanently decrement currentStock on each
  *    inventory-applicable ref and write InventoryAdjustment "Stock Out" rows.
- *    Runs after the transaction commits (inventory-reservation.js has no
- *    session support yet), matching this endpoint's existing behavior.
  *
  * For Cash, the frontend calls this immediately after createOrder succeeds.
  * For other payment modes (future), the payment gateway callback calls it.
  */
 async function confirmOrder(req, res) {
-  const session = await mongoose.startSession();
   try {
     const orderId = req.params.id;
     if (!mongoose.isValidObjectId(orderId)) throw "Invalid order ID.";
@@ -856,69 +1003,59 @@ async function confirmOrder(req, res) {
       throw "Order expired — the 30-minute hold has lapsed. Please create a new order.";
     }
 
-    const bookingNumber = await generateBookingNumber();
-    const receiptNo = await generateReceiptNumber();
+    const [bookingNumber, receiptNo] = await Promise.all([generateBookingNumber(), generateReceiptNumber()]);
     const now = new Date();
     const customerId = order.customer._id ?? order.customer;
 
     let booking;
     let transaction;
-    await session.withTransaction(async () => {
+    try {
       // ── 1. Write Booking (permanent record) ──────────────────────────────
-      const created = await Booking.create(
-        [
-          {
-            bookingNumber,
-            orderId: order._id,
-            customer: customerId,
-            lines: order.lines,
-            subtotal: order.subtotal,
-            gstAmount: order.gstAmount,
-            grandTotal: order.grandTotal,
-            paymentMode: order.paymentMode,
-            paymentModeName: order.paymentModeName,
-            paymentStatus: "paid",
-            bookingStatus: "confirmed",
-            portal: order.portal,
-            bookedBy: order.bookedBy,
-            entity: order.entity,
-            bookedAt: now,
-            createdBy: order.bookedBy ?? null,
-          },
-        ],
-        { session }
-      );
-      booking = created[0];
+      booking = await Booking.create({
+        bookingNumber,
+        orderId: order._id,
+        customer: customerId,
+        lines: order.lines,
+        subtotal: order.subtotal,
+        gstAmount: order.gstAmount,
+        grandTotal: order.grandTotal,
+        paymentMode: order.paymentMode,
+        paymentModeName: order.paymentModeName,
+        paymentStatus: "paid",
+        bookingStatus: "confirmed",
+        portal: order.portal,
+        bookedBy: order.bookedBy,
+        entity: order.entity,
+        bookedAt: now,
+        createdBy: order.bookedBy ?? null,
+      });
 
       // ── 2. Write Transaction (payment/receipt record) ─────────────────────
-      const createdTxn = await Transaction.create(
-        [
-          {
-            receiptNo,
-            bookingId: booking._id,
-            orderId: order._id,
-            customer: customerId,
-            paymentMode: order.paymentMode,
-            paymentModeName: order.paymentModeName,
-            amount: order.grandTotal,
-            status: "paid",
-            portal: order.portal,
-            transactionDate: now,
-            processedBy: order.bookedBy,
-            createdBy: order.bookedBy ?? null,
-          },
-        ],
-        { session }
-      );
-      transaction = createdTxn[0];
+      transaction = await Transaction.create({
+        receiptNo,
+        bookingId: booking._id,
+        orderId: order._id,
+        customer: customerId,
+        paymentMode: order.paymentMode,
+        paymentModeName: order.paymentModeName,
+        amount: order.grandTotal,
+        paymentStatus: "paid",
+        portal: order.portal,
+        transactionDate: now,
+        processedBy: order.bookedBy,
+        createdBy: order.bookedBy ?? null,
+      });
 
       // ── 3. Update Order ─────────────────────────────────────────────────
-      await Order.findByIdAndUpdate(
-        order._id,
-        { orderStatus: "confirmed", bookingId: booking._id },
-        { session }
-      );
-    });
+      await Order.findByIdAndUpdate(order._id, { orderStatus: "confirmed", bookingId: booking._id });
+    } catch (writeError) {
+      // Best-effort cleanup so a retry doesn't leave orphaned rows or try to
+      // confirm again against a half-written state — order stays "pending"
+      // (never touched above), so the client can safely retry the same order.
+      if (transaction) await Transaction.deleteOne({ _id: transaction._id }).catch(() => {});
+      if (booking) await Booking.deleteOne({ _id: booking._id }).catch(() => {});
+      throw writeError;
+    }
 
     // ── 4. Permanently decrement stock + consume reservations ────────────────
     await consumeReservations(
@@ -960,8 +1097,6 @@ async function confirmOrder(req, res) {
     });
   } catch (error) {
     return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 400 : undefined });
-  } finally {
-    await session.endSession();
   }
 }
 
@@ -1001,8 +1136,15 @@ async function listBookings(req, res) {
     }
     if (req.query.search) {
       const regex = searchRegex(req.query.search);
-      const matchingCustomers = await Customer.find({ name: regex }).select("_id");
-      filter.$or = [{ bookingNumber: regex }, { customer: { $in: matchingCustomers.map((c) => c._id) } }];
+      const [matchingCustomers, matchingTransactions] = await Promise.all([
+        Customer.find({ name: regex }).select("_id"),
+        Transaction.find({ receiptNo: regex }).select("bookingId"),
+      ]);
+      filter.$or = [
+        { bookingNumber: regex },
+        { customer: { $in: matchingCustomers.map((c) => c._id) } },
+        { _id: { $in: matchingTransactions.map((t) => t.bookingId) } },
+      ];
     }
 
     const [bookings, total] = await Promise.all([
@@ -1016,9 +1158,17 @@ async function listBookings(req, res) {
       Booking.countDocuments(filter),
     ]);
 
+    // Receipt numbers live on Transaction, not Booking (see models/transactions'
+    // own comment on why) — one batched lookup instead of populate, since
+    // Booking↔Transaction isn't a declared ref in either direction.
+    const bookingIds = bookings.map((b) => b._id);
+    const transactions = await Transaction.find({ bookingId: { $in: bookingIds } }).select("bookingId receiptNo");
+    const receiptByBooking = new Map(transactions.map((t) => [String(t.bookingId), t.receiptNo]));
+
     const items = bookings.map((b) => ({
       _id: b._id,
       bookingNumber: b.bookingNumber,
+      receiptNo: receiptByBooking.get(String(b._id)) ?? null,
       orderNumber: b.orderId?.orderNumber ?? null,
       customer: b.customer
         ? { _id: b.customer._id, customerCode: b.customer.customerCode, name: b.customer.name }
@@ -1059,7 +1209,7 @@ async function getBookingDetail(req, res) {
         .populate("lines.deities", "name")
         .populate("bookedBy", "name email"),
       Transaction.findOne({ bookingId: id }).select(
-        "receiptNo amount status paymentModeName transactionDate processedBy"
+        "receiptNo amount paymentStatus paymentModeName transactionDate processedBy"
       ),
     ]);
 
@@ -1112,7 +1262,9 @@ function setPortal(portalValue) {
 function registerBookingRoutes(r) {
   // ── Lookup / catalogue (read) ──────────────────────────────────────────
   r.get("/customers/search",    requirePermission("admin-booking", "view"),       searchCustomers);
+  r.get("/customers/lookup",    requirePermission("admin-booking", "view"),       lookupCustomerByMobile);
   r.post("/customers",          requirePermission("admin-booking", "fullAccess"), validateBody(createCustomerSchema), createWalkInCustomer);
+  r.get("/customers/:id/recent-bookings", requirePermission("admin-booking", "view"), getRecentBookings);
   r.get("/items",               requirePermission("admin-booking", "view"),       listPosItems);
   r.get("/services",            requirePermission("admin-booking", "view"),       listPosServices);
   r.get("/payment-modes",       requirePermission("admin-booking", "view"),       listPaymentModes);
@@ -1122,6 +1274,7 @@ function registerBookingRoutes(r) {
 
   // ── Booking flow (write) ───────────────────────────────────────────────
   r.post("/summary",            requirePermission("admin-booking", "view"),       validateBody(summarySchema),      bookingSummary);
+  r.post("/recheck-lines",      requirePermission("admin-booking", "view"),       validateBody(recheckLinesSchema), recheckLines);
   r.post("/orders",             requirePermission("admin-booking", "fullAccess"), validateBody(createOrderSchema),  createOrder);
   r.post("/orders/:id/confirm", requirePermission("admin-booking", "fullAccess"),                                   confirmOrder);
 

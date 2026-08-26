@@ -1,5 +1,6 @@
 const mongoose = require("mongoose");
 const { auditablePlugin } = require("../../common/plugins/auditable");
+const { PORTAL_TYPES } = require("../orders");
 
 /**
  * A Transaction is the payment-specific record for a confirmed Booking —
@@ -15,8 +16,6 @@ const { auditablePlugin } = require("../../common/plugins/auditable");
 
 const TRANSACTION_STATUSES = ["paid", "pending", "refunded"];
 
-const { PORTAL_TYPES } = require("../orders");
-
 const transactionSchema = new mongoose.Schema({
   receiptNo: { type: String, required: true },
 
@@ -27,7 +26,13 @@ const transactionSchema = new mongoose.Schema({
   paymentMode: { type: mongoose.Schema.Types.ObjectId, ref: "PaymentMode", required: true },
   paymentModeName: { type: String, required: true },
   amount: { type: Number, required: true, min: 0 },
-  status: { type: String, enum: TRANSACTION_STATUSES, default: "paid" },
+  // Named paymentStatus, not status — auditablePlugin (applied below)
+  // already declares its own `status: Number` (the generic active/inactive
+  // flag every model gets); a same-named field here would be silently
+  // clobbered by the plugin's schema.add(), since the plugin runs after
+  // this object literal. Booking/Order avoid the same collision the same
+  // way, via bookingStatus/orderStatus.
+  paymentStatus: { type: String, enum: TRANSACTION_STATUSES, default: "paid" },
 
   // Mirrors the Booking/Order's own portal field — denormalized here so
   // the Transactions ledger can filter/report by surface without a join.
@@ -35,6 +40,21 @@ const transactionSchema = new mongoose.Schema({
 
   transactionDate: { type: Date, required: true },
   processedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+
+  // Denormalized snapshots — see common/utils/entity-snapshot. Frozen at
+  // write time; not retroactively updated by a later name/role change.
+  customerInfo: { type: mongoose.Schema.Types.Mixed, default: null },
+  processedByInfo: { type: mongoose.Schema.Types.Mixed, default: null },
+});
+
+transactionSchema.pre("save", async function populateTransactionSnapshots() {
+  const { buildUserSnapshot, buildCustomerSnapshot } = require("../../common/utils/entity-snapshot");
+  if (this.isModified("customer") && this.customer) {
+    this.customerInfo = await buildCustomerSnapshot(this.customer);
+  }
+  if (this.isModified("processedBy") && this.processedBy) {
+    this.processedByInfo = await buildUserSnapshot(this.processedBy);
+  }
 });
 
 transactionSchema.plugin(auditablePlugin);
@@ -43,7 +63,7 @@ transactionSchema.index({ receiptNo: 1 }, { unique: true });
 transactionSchema.index({ bookingId: 1 });
 transactionSchema.index({ orderId: 1 });
 transactionSchema.index({ customer: 1, createdAt: -1 });
-transactionSchema.index({ status: 1, createdAt: -1 });
+transactionSchema.index({ paymentStatus: 1, createdAt: -1 });
 transactionSchema.index({ portal: 1, createdAt: -1 });
 
 module.exports = { Transaction: mongoose.model("Transaction", transactionSchema), TRANSACTION_STATUSES };

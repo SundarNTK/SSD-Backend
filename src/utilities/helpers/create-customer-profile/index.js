@@ -16,6 +16,10 @@ async function createCustomerProfile({
   dateOfBirth,
   gender,
   familyMembers,
+  // Every caller of this shared helper is a real registration (public
+  // register, admin-created, seed data) except the POS walk-in flow, which
+  // explicitly passes false — see models/customers' own comment on the field.
+  isRegistered = true,
 }) {
   const customerCode = await generateCustomerCode();
 
@@ -29,6 +33,7 @@ async function createCustomerProfile({
     dateOfBirth: dateOfBirth || null,
     gender: gender || null,
     familyMembers: familyMembers || [],
+    isRegistered,
   });
 }
 

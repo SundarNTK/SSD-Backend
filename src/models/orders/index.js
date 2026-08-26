@@ -89,6 +89,21 @@ const orderSchema = new mongoose.Schema({
   bookedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
   // Entity context at the time of booking
   entity: { type: mongoose.Schema.Types.ObjectId, default: null },
+
+  // Denormalized snapshots — see common/utils/entity-snapshot. Frozen at
+  // write time, same as the line items; not retroactively updated.
+  customerInfo: { type: mongoose.Schema.Types.Mixed, default: null },
+  bookedByInfo: { type: mongoose.Schema.Types.Mixed, default: null },
+});
+
+orderSchema.pre("save", async function populateOrderSnapshots() {
+  const { buildUserSnapshot, buildCustomerSnapshot } = require("../../common/utils/entity-snapshot");
+  if (this.isModified("customer") && this.customer) {
+    this.customerInfo = await buildCustomerSnapshot(this.customer);
+  }
+  if (this.isModified("bookedBy") && this.bookedBy) {
+    this.bookedByInfo = await buildUserSnapshot(this.bookedBy);
+  }
 });
 
 orderSchema.plugin(auditablePlugin);
