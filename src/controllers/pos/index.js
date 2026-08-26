@@ -750,19 +750,44 @@ async function recheckLines(req, res) {
         const { refType, refId, quantity, deities, devotees } = line;
         const base = { refType, refId, quantity, deities, devotees };
 
-        let name, code, unitPrice;
+        // offeringMeta rides along on a successful re-check so the frontend
+        // can reconstruct a full Offering for the cart line — without it,
+        // "repeat a past booking" lines have no way to reopen an Edit
+        // modal (isDeityMappingRequired, maxFamilyMembers, etc. aren't
+        // derivable from the plain name/code/price already returned here).
+        let name, code, unitPrice, offeringMeta;
         if (refType === "Item") {
-          const item = await Item.findOne(Item.notDeletedFilter({ _id: refId, status: 1, posAvailability: true }));
+          const item = await Item.findOne(Item.notDeletedFilter({ _id: refId, status: 1, posAvailability: true })).populate(
+            "deityMapping",
+            "name tamilName"
+          );
           if (!item) return { ...base, available: false, reason: "No longer available for sale." };
           name = item.name;
           code = item.code;
           unitPrice = item.salePrice;
+          offeringMeta = {
+            tamilName: item.tamilName,
+            isDeityMappingRequired: item.isDeityMappingRequired,
+            deityMapping: item.deityMapping,
+            isFamilyMembersRequired: item.isFamilyMembersRequired,
+            maxFamilyMembers: item.maxFamilyMembers,
+          };
         } else {
-          const svc = await Service.findOne(Service.notDeletedFilter({ _id: refId, status: 1, isPosAvailable: true }));
+          const svc = await Service.findOne(Service.notDeletedFilter({ _id: refId, status: 1, isPosAvailable: true })).populate(
+            "deityMapping",
+            "name tamilName"
+          );
           if (!svc) return { ...base, available: false, reason: "No longer available for sale." };
           name = svc.name;
           code = svc.code;
           unitPrice = svc.categoryDetails[0]?.salePrice ?? 0;
+          offeringMeta = {
+            tamilName: svc.tamilName,
+            isDeityMappingRequired: svc.isDeityMappingRequired,
+            deityMapping: svc.deityMapping,
+            isFamilyMembersRequired: svc.isFamilyMembersRequired,
+            maxFamilyMembers: svc.maxFamilyMembers,
+          };
         }
 
         const qty = effectiveQuantity(line);
@@ -780,7 +805,16 @@ async function recheckLines(req, res) {
           };
         }
 
-        return { ...base, available: true, name, code, unitPrice, lineTotal: +(unitPrice * qty).toFixed(2), quantity: qty };
+        return {
+          ...base,
+          available: true,
+          name,
+          code,
+          unitPrice,
+          lineTotal: +(unitPrice * qty).toFixed(2),
+          quantity: qty,
+          ...offeringMeta,
+        };
       })
     );
 
