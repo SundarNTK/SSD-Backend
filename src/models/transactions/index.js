@@ -15,6 +15,8 @@ const { auditablePlugin } = require("../../common/plugins/auditable");
 
 const TRANSACTION_STATUSES = ["paid", "pending", "refunded"];
 
+const { PORTAL_TYPES } = require("../orders");
+
 const transactionSchema = new mongoose.Schema({
   receiptNo: { type: String, required: true },
 
@@ -27,9 +29,9 @@ const transactionSchema = new mongoose.Schema({
   amount: { type: Number, required: true, min: 0 },
   status: { type: String, enum: TRANSACTION_STATUSES, default: "paid" },
 
-  // Mirrors the Booking/Order's own portal field — denormalized here too so
-  // the Transactions ledger can filter/report without a join.
-  portal: { type: String, enum: ["admin", "customer"], default: "admin" },
+  // Mirrors the Booking/Order's own portal field — denormalized here so
+  // the Transactions ledger can filter/report by surface without a join.
+  portal: { type: String, enum: PORTAL_TYPES, default: "admin" },
 
   transactionDate: { type: Date, required: true },
   processedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },

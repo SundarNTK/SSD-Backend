@@ -742,7 +742,10 @@ async function createOrder(req, res) {
       paymentMode: paymentModeId,
       paymentModeName: paymentMode.name,
       orderStatus: "pending",
-      portal: "admin",
+      // Stamped from req.posPortal, which is set by the setPortal()
+      // middleware on whichever route tree received this request — never
+      // from the client body, so a POS terminal cannot forge "admin".
+      portal: req.posPortal ?? "admin",
       expiresAt,
       bookedBy: req.auth?.userId ?? null,
       entity: req.auth?.entityId ?? null,
@@ -822,14 +825,25 @@ async function confirmOrder(req, res) {
 
     if (!order) throw "Order not found.";
     if (order.orderStatus === "confirmed") {
-      // Idempotent — return the existing booking + its transaction
-      const [existing, existingTransaction] = await Promise.all([
-        Booking.findById(order.bookingId).populate("customer", "customerCode name email mobileNumber"),
+      // Idempotent — return the existing booking + its transaction.
+      // Guard against the edge case where the booking doc was force-deleted
+      // after the order was already confirmed (should never happen in normal
+      // operation, but failing with a clear message is better than a crash).
+      const [existing, existingTxn] = await Promise.all([
+        Booking.findById(order.bookingId)
+          .populate("customer", "customerCode name email mobileNumber")
+          .populate("lines.deities", "name")
+          .populate("bookedBy", "name email"),
         Transaction.findOne({ orderId: order._id }),
       ]);
+      if (!existing) throw "Booking record not found for this confirmed order.";
       return responseHandler({
         res,
-        response: { ...existing.toObject(), receiptNo: existingTransaction?.receiptNo ?? null },
+        response: {
+          ...existing.toObject(),
+          receiptNo: existingTxn?.receiptNo ?? null,
+          orderNumber: order.orderNumber,
+        },
         successMessage: "Booking already confirmed.",
       });
     }
@@ -967,9 +981,11 @@ function deriveLineType(lines) {
  * confirmed/cancelled Bookings — pending Orders that never got confirmed are
  * abandoned holds, not transactions, so they don't appear here.
  *
- * `portal` distinguishes which surface created the booking ("admin" for both
- * POS Portal and Admin Booking today — see models/orders' own comment; a
- * future Customer Portal self-service flow would stamp "customer").
+ * `portal` filters by the surface that created the booking:
+ *   "admin"    → Admin Booking screen (Admin Panel)
+ *   "pos"      → POS Portal counter terminal
+ *   "customer" → Customer Portal self-service (future)
+ * Omit to see all portals together (default for the transactions screen).
  */
 async function listBookings(req, res) {
   try {
@@ -980,7 +996,7 @@ async function listBookings(req, res) {
     if (req.query.status && BOOKING_STATUSES.includes(req.query.status)) {
       filter.bookingStatus = req.query.status;
     }
-    if (req.query.portal && ["admin", "customer"].includes(req.query.portal)) {
+    if (req.query.portal && ["admin", "pos", "customer"].includes(req.query.portal)) {
       filter.portal = req.query.portal;
     }
     if (req.query.search) {
@@ -1025,24 +1041,41 @@ async function listBookings(req, res) {
 
 /**
  * GET /pos/booking/bookings/:id
+ *
  * Full detail for one booking — every line (with deity/devotee breakdown),
- * customer profile, order reference, and payment info.
+ * customer profile, order reference, payment info, and the Transaction
+ * record (receipt number, amount, transaction date).
  */
 async function getBookingDetail(req, res) {
   try {
     const id = req.params.id;
     if (!mongoose.isValidObjectId(id)) throw "Invalid booking ID.";
 
-    const booking = await Booking.findOne({ _id: id })
-      .populate("customer", "customerCode name email mobileNumber")
-      .populate("orderId", "orderNumber orderStatus")
-      .populate("paymentMode", "name")
-      .populate("lines.deities", "name")
-      .populate("bookedBy", "name email");
+    const [booking, transaction] = await Promise.all([
+      Booking.findOne({ _id: id })
+        .populate("customer", "customerCode name email mobileNumber")
+        .populate("orderId", "orderNumber orderStatus")
+        .populate("paymentMode", "name")
+        .populate("lines.deities", "name")
+        .populate("bookedBy", "name email"),
+      Transaction.findOne({ bookingId: id }).select(
+        "receiptNo amount status paymentModeName transactionDate processedBy"
+      ),
+    ]);
 
     if (!booking) throw "Booking not found.";
 
-    return responseHandler({ res, response: booking });
+    return responseHandler({
+      res,
+      response: {
+        ...booking.toObject(),
+        // Attach the transaction snapshot — the receipt number lives here,
+        // not on the Booking itself, by design (1:many for future partial
+        // payments / refunds). For the current cash-only flow it's always
+        // exactly one row.
+        transaction: transaction ?? null,
+      },
+    });
   } catch (error) {
     return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 404 : undefined });
   }
@@ -1050,88 +1083,71 @@ async function getBookingDetail(req, res) {
 
 // ─── router assembly ──────────────────────────────────────────────────────────
 
+/**
+ * Portal middleware factory — stamps req.posPortal with the correct value
+ * derived from which route tree received the request, so handler functions
+ * never trust anything from the client body to decide what portal stamped a
+ * booking. This mirrors how HEB's OBS controller derives the booking
+ * platform from the URL segment rather than a client-supplied field.
+ *
+ * Route layout:
+ *   /pos/booking/*        → portal: "pos"   (POS Portal counter terminal)
+ *   /pos/admin/booking/*  → portal: "admin" (Admin Panel booking screen)
+ *   (future) /pos/customer/booking/* → portal: "customer"
+ */
+function setPortal(portalValue) {
+  return function stampPortal(req, _res, next) {
+    req.posPortal = portalValue;
+    next();
+  };
+}
+
+/**
+ * Register the shared booking route handlers onto a given Express Router.
+ * Called twice: once for the POS sub-router ("pos") and once for the Admin
+ * sub-router ("admin"). Handler functions themselves just read req.posPortal
+ * — the portal value is never passed as an argument, so there is one code
+ * path for all surfaces and no risk of the two trees drifting.
+ */
+function registerBookingRoutes(r) {
+  // ── Lookup / catalogue (read) ──────────────────────────────────────────
+  r.get("/customers/search",    requirePermission("admin-booking", "view"),       searchCustomers);
+  r.post("/customers",          requirePermission("admin-booking", "fullAccess"), validateBody(createCustomerSchema), createWalkInCustomer);
+  r.get("/items",               requirePermission("admin-booking", "view"),       listPosItems);
+  r.get("/services",            requirePermission("admin-booking", "view"),       listPosServices);
+  r.get("/payment-modes",       requirePermission("admin-booking", "view"),       listPaymentModes);
+  r.get("/catalogue",           requirePermission("admin-booking", "view"),       getCatalogue);
+  r.get("/deities",             requirePermission("admin-booking", "view"),       listDeities);
+  r.get("/nakshathirams",       requirePermission("admin-booking", "view"),       listNakshathirams);
+
+  // ── Booking flow (write) ───────────────────────────────────────────────
+  r.post("/summary",            requirePermission("admin-booking", "view"),       validateBody(summarySchema),      bookingSummary);
+  r.post("/orders",             requirePermission("admin-booking", "fullAccess"), validateBody(createOrderSchema),  createOrder);
+  r.post("/orders/:id/confirm", requirePermission("admin-booking", "fullAccess"),                                   confirmOrder);
+
+  // ── Transaction ledger (read) ──────────────────────────────────────────
+  r.get("/bookings",            requirePermission("pos-transactions", "view"),    listBookings);
+  r.get("/bookings/:id",        requirePermission("pos-transactions", "view"),    getBookingDetail);
+}
+
 const router = express.Router();
 
 // All POS routes require an authenticated admin
 router.use(authGuard, adminOnly);
 
-router.get("/health", (req, res) =>
+router.get("/health", (_req, res) =>
   res.json({ ok: true, service: "SSD-Backend", module: "pos" })
 );
 
-// Booking sub-routes — gated on "admin-booking" module permission
-const booking = express.Router();
+// ── POS Portal: /pos/booking/* → portal = "pos" ───────────────────────────
+const posBookingRouter = express.Router();
+registerBookingRoutes(posBookingRouter);
+router.use("/booking", setPortal("pos"), posBookingRouter);
 
-booking.get(
-  "/customers/search",
-  requirePermission("admin-booking", "view"),
-  searchCustomers
-);
-booking.post(
-  "/customers",
-  requirePermission("admin-booking", "fullAccess"),
-  validateBody(createCustomerSchema),
-  createWalkInCustomer
-);
-booking.get(
-  "/items",
-  requirePermission("admin-booking", "view"),
-  listPosItems
-);
-booking.get(
-  "/services",
-  requirePermission("admin-booking", "view"),
-  listPosServices
-);
-booking.get(
-  "/payment-modes",
-  requirePermission("admin-booking", "view"),
-  listPaymentModes
-);
-booking.get(
-  "/catalogue",
-  requirePermission("admin-booking", "view"),
-  getCatalogue
-);
-booking.get(
-  "/deities",
-  requirePermission("admin-booking", "view"),
-  listDeities
-);
-booking.get(
-  "/nakshathirams",
-  requirePermission("admin-booking", "view"),
-  listNakshathirams
-);
-booking.post(
-  "/summary",
-  requirePermission("admin-booking", "view"),
-  validateBody(summarySchema),
-  bookingSummary
-);
-booking.post(
-  "/orders",
-  requirePermission("admin-booking", "fullAccess"),
-  validateBody(createOrderSchema),
-  createOrder
-);
-booking.post(
-  "/orders/:id/confirm",
-  requirePermission("admin-booking", "fullAccess"),
-  confirmOrder
-);
-booking.get(
-  "/bookings",
-  requirePermission("pos-transactions", "view"),
-  listBookings
-);
-booking.get(
-  "/bookings/:id",
-  requirePermission("pos-transactions", "view"),
-  getBookingDetail
-);
-
-router.use("/booking", booking);
+// ── Admin Panel: /pos/admin/booking/* → portal = "admin" ─────────────────
+const adminBookingRouter = express.Router();
+registerBookingRoutes(adminBookingRouter);
+router.use("/admin/booking", setPortal("admin"), adminBookingRouter);
 
 module.exports = router;
 // Exposed for unit testing (src/controllers/pos/__tests__) — the router

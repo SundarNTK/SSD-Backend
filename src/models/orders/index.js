@@ -49,6 +49,12 @@ const orderLineSchema = new mongoose.Schema(
 
 const ORDER_STATUSES = ["pending", "confirmed", "cancelled"];
 
+// Which surface created this order.
+// "admin"    — Admin Booking screen inside the Admin Panel
+// "pos"      — POS Portal counter terminal (/pos)
+// "customer" — Customer Portal self-service (future)
+const PORTAL_TYPES = ["admin", "pos", "customer"];
+
 const orderSchema = new mongoose.Schema({
   orderNumber: { type: String, required: true },
   customer: { type: mongoose.Schema.Types.ObjectId, ref: "Customer", required: true },
@@ -64,10 +70,12 @@ const orderSchema = new mongoose.Schema({
 
   orderStatus: { type: String, enum: ORDER_STATUSES, default: "pending" },
 
-  // Which surface created this order — POS Portal and Admin Booking are
-  // both staff-driven, so both stamp "admin"; a future Customer Portal
-  // self-service flow would stamp "customer" from its own endpoint.
-  portal: { type: String, enum: ["admin", "customer"], default: "admin" },
+  // Which surface created this order — stamped server-side from the route
+  // segment, never trusted from the client body.
+  //   "admin"    → Admin Booking screen (Admin Panel)
+  //   "pos"      → POS Portal counter terminal
+  //   "customer" → Customer Portal self-service (future)
+  portal: { type: String, enum: PORTAL_TYPES, default: "admin" },
 
   // Set when this order is confirmed and a Booking record is created
   bookingId: { type: mongoose.Schema.Types.ObjectId, ref: "Booking", default: null },
@@ -91,4 +99,4 @@ orderSchema.index({ orderStatus: 1, createdAt: -1 });
 // Allows the cleanup job to find and process expired pending orders efficiently
 orderSchema.index({ orderStatus: 1, expiresAt: 1 });
 
-module.exports = { Order: mongoose.model("Order", orderSchema), ORDER_STATUSES };
+module.exports = { Order: mongoose.model("Order", orderSchema), ORDER_STATUSES, PORTAL_TYPES };
