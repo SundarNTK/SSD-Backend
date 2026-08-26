@@ -1,9 +1,18 @@
 const env = require("./config/env");
 const connectDatabase = require("./config/database");
 const app = require("./app");
+const { startReservationCleanupJob } = require("./utilities/helpers/release-expired-reservations");
 
 async function start() {
   await connectDatabase();
+
+  // Start the inventory-reservation expiry cleanup job.
+  // Runs every 5 minutes — releases held stock for orders that were
+  // abandoned without being confirmed (the 30-minute cart hold).
+  // Must start AFTER the DB connection is ready so the Mongoose models
+  // are initialised before the first query fires.
+  startReservationCleanupJob();
+
   // Explicit "0.0.0.0" — Render (and most PaaS hosts) route traffic to the
   // container's external interface, not just loopback, so the default host
   // Node picks when none is given isn't a safe assumption to rely on here.

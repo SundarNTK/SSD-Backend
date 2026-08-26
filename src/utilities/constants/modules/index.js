@@ -53,6 +53,7 @@ const AVAILABLE_MODULES = [
   { key: "nakshathirams", label: "Nakshathiram Master", group: "Masters" },
   { key: "payment-modes", label: "Payment Mode Master", group: "Masters" },
   { key: "inventory", label: "Inventory", group: "Inventory" },
+  { key: "admin-booking", label: "Admin Booking", group: "Transactions" },
 ];
 
 const MODULE_KEYS = AVAILABLE_MODULES.map((m) => m.key);
