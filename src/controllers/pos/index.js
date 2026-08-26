@@ -210,7 +210,8 @@ async function listPosItems(req, res) {
         .populate("categoryDetails.category", "name color")
         .populate("categoryDetails.subCategory", "name")
         .populate("generalLedger", "gstType")
-        .select("name tamilName code salePrice isInventoryApplicable currentStock threshold isDeityMappingRequired isFamilyMembersRequired minQuantity maxQuantity categoryDetails")
+        .populate("deityMapping", "name")
+        .select("name tamilName code salePrice isInventoryApplicable currentStock threshold isDeityMappingRequired deityMapping isFamilyMembersRequired minFamilyMembers maxFamilyMembers minQuantity maxQuantity categoryDetails")
         .sort({ name: 1 })
         .skip((page - 1) * pageSize)
         .limit(pageSize),
@@ -282,7 +283,10 @@ async function decorateItems(items) {
         tamilName: item.tamilName,
         salePrice: item.salePrice,
         isDeityMappingRequired: item.isDeityMappingRequired,
+        deityMapping: item.deityMapping,
         isFamilyMembersRequired: item.isFamilyMembersRequired,
+        minFamilyMembers: item.minFamilyMembers,
+        maxFamilyMembers: item.maxFamilyMembers,
         minQuantity: item.minQuantity,
         maxQuantity: item.maxQuantity,
         categoryDetails: item.categoryDetails,
@@ -440,9 +444,11 @@ async function getCatalogue(req, res) {
     const [uncategorizedItems, uncategorizedServices] = await Promise.all([
       uncategorizedItemIds.length
         ? decorateItems(
-            await Item.find({ _id: { $in: uncategorizedItemIds } }).select(
-              "name tamilName code salePrice isInventoryApplicable currentStock threshold isDeityMappingRequired isFamilyMembersRequired minQuantity maxQuantity categoryDetails"
-            )
+            await Item.find({ _id: { $in: uncategorizedItemIds } })
+              .populate("deityMapping", "name")
+              .select(
+                "name tamilName code salePrice isInventoryApplicable currentStock threshold isDeityMappingRequired deityMapping isFamilyMembersRequired minFamilyMembers maxFamilyMembers minQuantity maxQuantity categoryDetails"
+              )
           )
         : [],
       uncategorizedServiceIds.length
@@ -473,10 +479,11 @@ async function getCatalogue(req, res) {
 
 /**
  * GET /pos/booking/deities
- * Full active Deity roster for the "which deity is this offering for" picker
- * — Item carries no curated deity list of its own (only the
- * isDeityMappingRequired flag), so both Items and Services draw from the
- * same master list here rather than Service's own `deityMapping` curation.
+ * Full active Deity roster for the "which deity is this offering for" picker.
+ * Both Item and Service now carry their own curated `deityMapping` (returned
+ * inline on each offering by decorateItems/decorateServices) — the frontend
+ * prefers that curated list and falls back to this full roster only when an
+ * offering's own mapping is empty.
  */
 async function listDeities(req, res) {
   try {

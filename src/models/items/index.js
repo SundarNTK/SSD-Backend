@@ -24,6 +24,7 @@ const itemSchema = new mongoose.Schema({
   description: { type: String, default: "" },
 
   isDeityMappingRequired: { type: Boolean, default: false },
+  deityMapping: { type: [{ type: mongoose.Schema.Types.ObjectId, ref: "Deity" }], default: [] },
   printingGroup: { type: mongoose.Schema.Types.ObjectId, ref: "PrintingGroup", required: true },
 
   categoryDetails: { type: [categoryDetailSchema], default: [] },
@@ -41,6 +42,8 @@ const itemSchema = new mongoose.Schema({
 
   futureBookingCutOffDate: { type: Date, default: null },
   isFamilyMembersRequired: { type: Boolean, default: false },
+  minFamilyMembers: { type: Number, default: 1 },
+  maxFamilyMembers: { type: Number, default: 1 },
   posAvailability: { type: Boolean, default: true },
   customerPortalAvailability: { type: Boolean, default: true },
 });
@@ -56,6 +59,7 @@ itemSchema.index({ status: 1, createdAt: -1 });
 // screen (and the POS/customer-portal browsing screens) will filter by.
 itemSchema.index({ generalLedger: 1 });
 itemSchema.index({ printingGroup: 1 });
+itemSchema.index({ deityMapping: 1 });
 itemSchema.index({ "categoryDetails.category": 1 });
 itemSchema.index({ "categoryDetails.subCategory": 1 });
 
