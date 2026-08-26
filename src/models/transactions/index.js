@@ -40,6 +40,21 @@ const transactionSchema = new mongoose.Schema({
 
   transactionDate: { type: Date, required: true },
   processedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+
+  // Denormalized snapshots — see common/utils/entity-snapshot. Frozen at
+  // write time; not retroactively updated by a later name/role change.
+  customerInfo: { type: mongoose.Schema.Types.Mixed, default: null },
+  processedByInfo: { type: mongoose.Schema.Types.Mixed, default: null },
+});
+
+transactionSchema.pre("save", async function populateTransactionSnapshots() {
+  const { buildUserSnapshot, buildCustomerSnapshot } = require("../../common/utils/entity-snapshot");
+  if (this.isModified("customer") && this.customer) {
+    this.customerInfo = await buildCustomerSnapshot(this.customer);
+  }
+  if (this.isModified("processedBy") && this.processedBy) {
+    this.processedByInfo = await buildUserSnapshot(this.processedBy);
+  }
 });
 
 transactionSchema.plugin(auditablePlugin);

@@ -22,6 +22,40 @@ function auditablePlugin(schema) {
     isDeleted: { type: Boolean, default: false },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    // Denormalized snapshots of createdBy/updatedBy — {_id, name, email,
+    // mobileNo, roleName, roleId} — auto-populated by the hooks below
+    // whenever createdBy/updatedBy is set. Never assigned directly by
+    // application code; see utils/entity-snapshot for what builds these.
+    createdByInfo: { type: mongoose.Schema.Types.Mixed, default: null },
+    updatedByInfo: { type: mongoose.Schema.Types.Mixed, default: null },
+  });
+
+  // Fires for every `new Model(...).save()` AND every `Model.create(...)`
+  // (create() calls save() internally) — no controller anywhere has to
+  // remember to populate the snapshot fields itself.
+  schema.pre("save", async function populateAuditSnapshots() {
+    const { buildUserSnapshot } = require("../utils/entity-snapshot");
+    if (this.isModified("createdBy") && this.createdBy) {
+      this.createdByInfo = await buildUserSnapshot(this.createdBy);
+    }
+    if (this.isModified("updatedBy") && this.updatedBy) {
+      this.updatedByInfo = await buildUserSnapshot(this.updatedBy);
+    }
+  });
+
+  // findOneAndUpdate/updateOne/updateMany bypass `pre("save")` entirely —
+  // this is the update-path equivalent, covering makeCrudController's
+  // generic update() and every hand-written controller that updates via a
+  // query instead of loading-then-saving a document.
+  schema.pre(["findOneAndUpdate", "updateOne", "updateMany"], async function populateAuditSnapshotsOnUpdate() {
+    const update = this.getUpdate();
+    if (!update) return;
+    const setDoc = update.$set || update;
+    if (setDoc.updatedBy) {
+      const { buildUserSnapshot } = require("../utils/entity-snapshot");
+      setDoc.updatedByInfo = await buildUserSnapshot(setDoc.updatedBy);
+      this.setUpdate(update);
+    }
   });
 
   if (!hasOwnUid) {
