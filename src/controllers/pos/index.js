@@ -43,6 +43,7 @@ const { Customer } = require("../../models/customers");
 const PaymentMode = require("../../models/payment-modes");
 const { Order } = require("../../models/orders");
 const { Booking, BOOKING_STATUSES } = require("../../models/bookings");
+const { Transaction } = require("../../models/transactions");
 
 const {
   placeReservationsForOrder,
@@ -96,6 +97,17 @@ async function generateBookingNumber() {
   const n = await nextSequence("booking");
   const today = new Date().toISOString().slice(0, 10).replace(/-/g, "");
   return `BKG${today}${String(n).padStart(4, "0")}`;
+}
+
+/**
+ * Generate the next receipt number: RCP-YYYYMMDD-NNNN
+ * Uses its own sequence counter, distinct from the booking number's — a
+ * receipt is the Transaction's identity, not the Booking's.
+ */
+async function generateReceiptNumber() {
+  const n = await nextSequence("receipt");
+  const today = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+  return `RCP-${today}-${String(n).padStart(4, "0")}`;
 }
 
 /**
@@ -781,15 +793,21 @@ async function createOrder(req, res) {
  * POST /pos/booking/orders/:id/confirm
  *
  * 1. Verify the order is still pending and not expired.
- * 2. Write the Booking document (permanent confirmed record).
- * 3. Mark the Order as confirmed, set bookingId.
- * 4. consumeReservations() — permanently decrement currentStock on each
+ * 2. Write the Booking (permanent confirmed record) + Transaction (payment/
+ *    receipt record) + mark the Order confirmed, all inside one MongoDB
+ *    transaction — either all three land or none do, so a mid-write crash
+ *    can never leave a Booking with no matching Transaction, or an Order
+ *    marked confirmed with no Booking behind it.
+ * 3. consumeReservations() — permanently decrement currentStock on each
  *    inventory-applicable ref and write InventoryAdjustment "Stock Out" rows.
+ *    Runs after the transaction commits (inventory-reservation.js has no
+ *    session support yet), matching this endpoint's existing behavior.
  *
  * For Cash, the frontend calls this immediately after createOrder succeeds.
  * For other payment modes (future), the payment gateway callback calls it.
  */
 async function confirmOrder(req, res) {
+  const session = await mongoose.startSession();
   try {
     const orderId = req.params.id;
     if (!mongoose.isValidObjectId(orderId)) throw "Invalid order ID.";
@@ -804,10 +822,16 @@ async function confirmOrder(req, res) {
 
     if (!order) throw "Order not found.";
     if (order.orderStatus === "confirmed") {
-      // Idempotent — return the existing booking
-      const existing = await Booking.findById(order.bookingId)
-        .populate("customer", "customerCode name email mobileNumber");
-      return responseHandler({ res, response: existing, successMessage: "Booking already confirmed." });
+      // Idempotent — return the existing booking + its transaction
+      const [existing, existingTransaction] = await Promise.all([
+        Booking.findById(order.bookingId).populate("customer", "customerCode name email mobileNumber"),
+        Transaction.findOne({ orderId: order._id }),
+      ]);
+      return responseHandler({
+        res,
+        response: { ...existing.toObject(), receiptNo: existingTransaction?.receiptNo ?? null },
+        successMessage: "Booking already confirmed.",
+      });
     }
     if (order.orderStatus === "cancelled") throw "This order has been cancelled and cannot be confirmed.";
 
@@ -819,35 +843,70 @@ async function confirmOrder(req, res) {
     }
 
     const bookingNumber = await generateBookingNumber();
+    const receiptNo = await generateReceiptNumber();
     const now = new Date();
+    const customerId = order.customer._id ?? order.customer;
 
-    // ── 1. Write Booking (permanent record) ──────────────────────────────────
-    const booking = await Booking.create({
-      bookingNumber,
-      orderId: order._id,
-      customer: order.customer._id ?? order.customer,
-      lines: order.lines,
-      subtotal: order.subtotal,
-      gstAmount: order.gstAmount,
-      grandTotal: order.grandTotal,
-      paymentMode: order.paymentMode,
-      paymentModeName: order.paymentModeName,
-      paymentStatus: "paid",
-      bookingStatus: "confirmed",
-      portal: order.portal,
-      bookedBy: order.bookedBy,
-      entity: order.entity,
-      bookedAt: now,
-      createdBy: order.bookedBy ?? null,
+    let booking;
+    let transaction;
+    await session.withTransaction(async () => {
+      // ── 1. Write Booking (permanent record) ──────────────────────────────
+      const created = await Booking.create(
+        [
+          {
+            bookingNumber,
+            orderId: order._id,
+            customer: customerId,
+            lines: order.lines,
+            subtotal: order.subtotal,
+            gstAmount: order.gstAmount,
+            grandTotal: order.grandTotal,
+            paymentMode: order.paymentMode,
+            paymentModeName: order.paymentModeName,
+            paymentStatus: "paid",
+            bookingStatus: "confirmed",
+            portal: order.portal,
+            bookedBy: order.bookedBy,
+            entity: order.entity,
+            bookedAt: now,
+            createdBy: order.bookedBy ?? null,
+          },
+        ],
+        { session }
+      );
+      booking = created[0];
+
+      // ── 2. Write Transaction (payment/receipt record) ─────────────────────
+      const createdTxn = await Transaction.create(
+        [
+          {
+            receiptNo,
+            bookingId: booking._id,
+            orderId: order._id,
+            customer: customerId,
+            paymentMode: order.paymentMode,
+            paymentModeName: order.paymentModeName,
+            amount: order.grandTotal,
+            status: "paid",
+            portal: order.portal,
+            transactionDate: now,
+            processedBy: order.bookedBy,
+            createdBy: order.bookedBy ?? null,
+          },
+        ],
+        { session }
+      );
+      transaction = createdTxn[0];
+
+      // ── 3. Update Order ─────────────────────────────────────────────────
+      await Order.findByIdAndUpdate(
+        order._id,
+        { orderStatus: "confirmed", bookingId: booking._id },
+        { session }
+      );
     });
 
-    // ── 2. Update Order ──────────────────────────────────────────────────────
-    await Order.findByIdAndUpdate(order._id, {
-      orderStatus: "confirmed",
-      bookingId: booking._id,
-    });
-
-    // ── 3. Permanently decrement stock + consume reservations ────────────────
+    // ── 4. Permanently decrement stock + consume reservations ────────────────
     await consumeReservations(
       order._id,
       order.lines,
@@ -865,6 +924,7 @@ async function confirmOrder(req, res) {
         _id: booking._id,
         bookingNumber: booking.bookingNumber,
         orderNumber: order.orderNumber,
+        receiptNo: transaction.receiptNo,
         customer: {
           _id: customerSnap._id,
           customerCode: customerSnap.customerCode,
@@ -886,6 +946,8 @@ async function confirmOrder(req, res) {
     });
   } catch (error) {
     return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 400 : undefined });
+  } finally {
+    await session.endSession();
   }
 }
 
