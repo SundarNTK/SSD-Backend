@@ -61,9 +61,21 @@ const customerSearchSchema = Joi.object({
   query: Joi.string().trim().min(1).max(100).required(),
 }).required();
 
+/**
+ * POST /pos/booking/customers
+ * Creates a walk-in devotee profile at the counter — mirrors Customer's own
+ * required-field shape (name + email required, mobile optional).
+ */
+const createCustomerSchema = Joi.object({
+  name: Joi.string().trim().min(1).max(150).required(),
+  email: Joi.string().trim().email({ tlds: false }).required(),
+  mobileNumber: Joi.string().trim().allow("", null).default(null),
+});
+
 module.exports = {
   summarySchema,
   createOrderSchema,
   confirmOrderSchema,
   customerSearchSchema,
+  createCustomerSchema,
 };

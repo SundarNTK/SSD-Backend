@@ -4,13 +4,17 @@
  *
  * Endpoints:
  *
- *   GET  /pos/booking/customers/search?query=   — quick customer lookup
- *   GET  /pos/booking/items?search=&category=   — POS item picker
- *   GET  /pos/booking/services?search=&category= — POS service picker
- *   GET  /pos/booking/payment-modes             — active payment modes
- *   POST /pos/booking/summary                   — price + availability calc (no writes)
- *   POST /pos/booking/orders                    — create order + reserve inventory
- *   POST /pos/booking/orders/:id/confirm        — confirm order → booking + stock-out
+ *   GET  /pos/booking/customers/search?query=          — quick customer lookup
+ *   POST /pos/booking/customers                        — create a walk-in devotee profile
+ *   GET  /pos/booking/items?search=&category=&subCategory=    — POS item picker
+ *   GET  /pos/booking/services?search=&category=&subCategory= — POS service picker
+ *   GET  /pos/booking/catalogue                        — category tabs + sub-category folders
+ *   GET  /pos/booking/deities                          — active deity roster
+ *   GET  /pos/booking/nakshathirams                    — active nakshathiram roster
+ *   GET  /pos/booking/payment-modes                    — active payment modes
+ *   POST /pos/booking/summary                          — price + availability calc (no writes)
+ *   POST /pos/booking/orders                            — create order + reserve inventory
+ *   POST /pos/booking/orders/:id/confirm                — confirm order → booking + stock-out
  *
  * Inventory reservation lifecycle: see inventory-reservation.js.
  */
@@ -23,9 +27,16 @@ const validateBody = require("../../common/middleware/validate");
 const { responseHandler, exceptionHandler } = require("../../utilities/handlers");
 const { nextSequence } = require("../../common/utils/sequence");
 const escapeRegex = require("../../common/utils/escape-regex");
+const env = require("../../config/env");
+const createCustomerProfile = require("../../utilities/helpers/create-customer-profile");
 
 const Item = require("../../models/items");
 const Service = require("../../models/services");
+const Category = require("../../models/categories");
+const SubCategory = require("../../models/sub-categories");
+const Deity = require("../../models/deities");
+const Nakshathiram = require("../../models/nakshathirams");
+const Entity = require("../../models/entities");
 const { Customer } = require("../../models/customers");
 const PaymentMode = require("../../models/payment-modes");
 const { Order } = require("../../models/orders");
@@ -43,6 +54,7 @@ const {
   createOrderSchema,
   confirmOrderSchema,
   customerSearchSchema,
+  createCustomerSchema,
 } = require("./request-objects");
 
 const mongoose = require("mongoose");
@@ -51,6 +63,18 @@ const mongoose = require("mongoose");
 
 function searchRegex(term) {
   return new RegExp(escapeRegex(term.trim()), "i");
+}
+
+/**
+ * Deity-mapped offerings (Coconut Archanai, Navagraha Archanai, ...) are
+ * priced and stocked per deity, not per an independently-typed quantity —
+ * picking 3 deities at $5 each is a $15 line, and reserves/consumes 3 units
+ * of inventory, the same as if "3" had been typed into a quantity box. A
+ * line with no deities selected falls back to its own `quantity` as before
+ * (a plain item like Ghee Lamp has no deity concept at all).
+ */
+function effectiveQuantity(line) {
+  return line.deities && line.deities.length > 0 ? line.deities.length : line.quantity;
 }
 
 /**
@@ -120,6 +144,44 @@ async function searchCustomers(req, res) {
   }
 }
 
+/**
+ * POST /pos/booking/customers
+ * Creates a walk-in devotee profile at the counter — no login attached.
+ * The admin-side Customer master deliberately has no create endpoint (see
+ * controllers/customers's own comment): every other path into the Customer
+ * collection carries context this doesn't need. A POS walk-in is exactly
+ * the case that comment named as the reason this would eventually exist.
+ */
+async function createWalkInCustomer(req, res) {
+  try {
+    const { error, value } = createCustomerSchema.validate(req.body);
+    if (error) throw error.details[0].message;
+
+    const { name, email, mobileNumber } = value;
+
+    const emailTaken = await Customer.exists(Customer.notDeletedFilter({ email }));
+    if (emailTaken) throw "A devotee profile already uses this email.";
+    if (mobileNumber) {
+      const mobileTaken = await Customer.exists(Customer.notDeletedFilter({ mobileNumber }));
+      if (mobileTaken) throw "A devotee profile already uses this mobile number.";
+    }
+
+    const entityId = req.auth?.entityId || (await Entity.findOne({ code: env.DEFAULT_ENTITY_CODE }))?._id;
+    if (!entityId) throw "No temple entity is configured.";
+
+    const customer = await createCustomerProfile({ entityId, name, email, mobileNumber: mobileNumber || null });
+    customer.createdBy = req.auth?.userId || null;
+    await customer.save();
+
+    return responseHandler({ res, response: customer, successMessage: "Devotee profile created.", statusCode: 201 });
+  } catch (error) {
+    if (error?.code === 11000) {
+      return exceptionHandler({ res, error: "Those details are already used by another profile.", statusCode: 409 });
+    }
+    return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 400 : undefined });
+  }
+}
+
 // ─── item / service catalogue for POS picker ─────────────────────────────────
 
 /**
@@ -139,37 +201,23 @@ async function listPosItems(req, res) {
     if (req.query.category) {
       filter["categoryDetails.category"] = req.query.category;
     }
+    if (req.query.subCategory) {
+      filter["categoryDetails.subCategory"] = req.query.subCategory;
+    }
 
     const [items, total] = await Promise.all([
       Item.find(filter)
         .populate("categoryDetails.category", "name color")
         .populate("categoryDetails.subCategory", "name")
         .populate("generalLedger", "gstType")
-        .select("name code salePrice isInventoryApplicable currentStock threshold isDeityMappingRequired isFamilyMembersRequired minQuantity maxQuantity categoryDetails")
+        .select("name tamilName code salePrice isInventoryApplicable currentStock threshold isDeityMappingRequired isFamilyMembersRequired minQuantity maxQuantity categoryDetails")
         .sort({ name: 1 })
         .skip((page - 1) * pageSize)
         .limit(pageSize),
       Item.countDocuments(filter),
     ]);
 
-    // Attach live available quantity to each item
-    const itemsWithAvailability = await Promise.all(
-      items.map(async (item) => {
-        const avail = await getAvailability("Item", item._id);
-        return {
-          _id: item._id,
-          code: item.code,
-          name: item.name,
-          salePrice: item.salePrice,
-          isDeityMappingRequired: item.isDeityMappingRequired,
-          isFamilyMembersRequired: item.isFamilyMembersRequired,
-          minQuantity: item.minQuantity,
-          maxQuantity: item.maxQuantity,
-          categoryDetails: item.categoryDetails,
-          inventory: avail,
-        };
-      })
-    );
+    const itemsWithAvailability = await decorateItems(items);
 
     return responseHandler({ res, response: { items: itemsWithAvailability, total, page, pageSize } });
   } catch (error) {
@@ -194,45 +242,80 @@ async function listPosServices(req, res) {
     if (req.query.category) {
       filter["categoryDetails.category"] = req.query.category;
     }
+    if (req.query.subCategory) {
+      filter["categoryDetails.subCategory"] = req.query.subCategory;
+    }
 
     const [services, total] = await Promise.all([
       Service.find(filter)
         .populate("categoryDetails.category", "name color")
         .populate("categoryDetails.subCategory", "name")
         .populate("deityMapping", "name")
-        .select("name code categoryDetails isInventoryRequired currentStock thresholdCount isDeityMappingRequired deityMapping isFamilyMembersRequired minFamilyMembers maxFamilyMembers sessionRequired")
+        .select("name tamilName code categoryDetails isInventoryRequired currentStock thresholdCount isDeityMappingRequired deityMapping isFamilyMembersRequired minFamilyMembers maxFamilyMembers sessionRequired")
         .sort({ name: 1 })
         .skip((page - 1) * pageSize)
         .limit(pageSize),
       Service.countDocuments(filter),
     ]);
 
-    const servicesWithAvailability = await Promise.all(
-      services.map(async (svc) => {
-        const avail = await getAvailability("Service", svc._id);
-        // salePrice lives in categoryDetails — expose first one as default if needed
-        const firstCatPrice = svc.categoryDetails[0]?.salePrice ?? 0;
-        return {
-          _id: svc._id,
-          code: svc.code,
-          name: svc.name,
-          defaultSalePrice: firstCatPrice,
-          categoryDetails: svc.categoryDetails,
-          isDeityMappingRequired: svc.isDeityMappingRequired,
-          deityMapping: svc.deityMapping,
-          isFamilyMembersRequired: svc.isFamilyMembersRequired,
-          minFamilyMembers: svc.minFamilyMembers,
-          maxFamilyMembers: svc.maxFamilyMembers,
-          sessionRequired: svc.sessionRequired,
-          inventory: avail,
-        };
-      })
-    );
+    const servicesWithAvailability = await decorateServices(services);
 
     return responseHandler({ res, response: { items: servicesWithAvailability, total, page, pageSize } });
   } catch (error) {
     return exceptionHandler({ res, error });
   }
+}
+
+/**
+ * Shared shaping for the two catalogue endpoints above and for the
+ * "uncategorized" bucket in getCatalogue() below — one definition of what a
+ * POS-facing item/service payload looks like, instead of copies that drift.
+ */
+async function decorateItems(items) {
+  return Promise.all(
+    items.map(async (item) => {
+      const avail = await getAvailability("Item", item._id);
+      return {
+        _id: item._id,
+        code: item.code,
+        name: item.name,
+        tamilName: item.tamilName,
+        salePrice: item.salePrice,
+        isDeityMappingRequired: item.isDeityMappingRequired,
+        isFamilyMembersRequired: item.isFamilyMembersRequired,
+        minQuantity: item.minQuantity,
+        maxQuantity: item.maxQuantity,
+        categoryDetails: item.categoryDetails,
+        inventory: avail,
+      };
+    })
+  );
+}
+
+async function decorateServices(services) {
+  return Promise.all(
+    services.map(async (svc) => {
+      const avail = await getAvailability("Service", svc._id);
+      // salePrice lives in categoryDetails — expose the first one as a
+      // default (admin can override per-line pricing in a future pass).
+      const firstCatPrice = svc.categoryDetails[0]?.salePrice ?? 0;
+      return {
+        _id: svc._id,
+        code: svc.code,
+        name: svc.name,
+        tamilName: svc.tamilName,
+        defaultSalePrice: firstCatPrice,
+        categoryDetails: svc.categoryDetails,
+        isDeityMappingRequired: svc.isDeityMappingRequired,
+        deityMapping: svc.deityMapping,
+        isFamilyMembersRequired: svc.isFamilyMembersRequired,
+        minFamilyMembers: svc.minFamilyMembers,
+        maxFamilyMembers: svc.maxFamilyMembers,
+        sessionRequired: svc.sessionRequired,
+        inventory: avail,
+      };
+    })
+  );
 }
 
 /**
@@ -249,6 +332,176 @@ async function listPaymentModes(req, res) {
       .sort({ name: 1 });
 
     return responseHandler({ res, response: { items: modes } });
+  } catch (error) {
+    return exceptionHandler({ res, error });
+  }
+}
+
+// ─── catalogue browsing (categories → sub-category folders) ─────────────────
+
+/**
+ * GET /pos/booking/catalogue
+ *
+ * Powers the POS Portal's folder browser. SubCategory carries no parent
+ * Category reference at the master level (see models/sub-categories) — the
+ * only place a (category, subCategory) pairing actually exists is on each
+ * Item/Service's own `categoryDetails` rows. So "folders" here are derived
+ * by scanning the live catalogue rather than read off a fixed hierarchy:
+ * every distinct (category, subCategory) pair present in an active,
+ * POS-available Item or Service becomes one folder card, with its own
+ * item/service counts. Anything with no categoryDetails at all (legal —
+ * the field isn't required) has nowhere to file into, so it's returned
+ * separately as "uncategorized" for the screen to show alongside the folders.
+ */
+async function getCatalogue(req, res) {
+  try {
+    const [items, services, categories] = await Promise.all([
+      Item.find(Item.notDeletedFilter({ status: 1, posAvailability: true })).select("categoryDetails"),
+      Service.find(Service.notDeletedFilter({ status: 1, isPosAvailable: true })).select("categoryDetails"),
+      Category.find(Category.notDeletedFilter({ status: 1 })).select("name color").sort({ displayOrder: 1, name: 1 }),
+    ]);
+
+    const subCategoryIds = new Set();
+    for (const doc of [...items, ...services]) {
+      for (const cd of doc.categoryDetails || []) subCategoryIds.add(String(cd.subCategory));
+    }
+    const subCategories = await SubCategory.find({ _id: { $in: [...subCategoryIds] } }).select("name color");
+    const subCategoryById = new Map(subCategories.map((s) => [String(s._id), s]));
+    const categoryById = new Map(categories.map((c) => [String(c._id), c]));
+
+    const folderMap = new Map(); // "categoryId::subCategoryId" -> folder accumulator
+    const categoryItemIds = new Map(); // categoryId -> Set(itemId)
+    const categoryServiceIds = new Map(); // categoryId -> Set(serviceId)
+
+    function addToFolder(cd, kind, docId) {
+      const catId = String(cd.category);
+      const subId = String(cd.subCategory);
+      const key = `${catId}::${subId}`;
+      if (!folderMap.has(key)) {
+        folderMap.set(key, {
+          categoryId: catId,
+          categoryName: categoryById.get(catId)?.name ?? "—",
+          subCategoryId: subId,
+          subCategoryName: subCategoryById.get(subId)?.name ?? "—",
+          color: subCategoryById.get(subId)?.color ?? categoryById.get(catId)?.color ?? null,
+          itemIds: new Set(),
+          serviceIds: new Set(),
+        });
+      }
+      const folder = folderMap.get(key);
+      const bucket = kind === "Item" ? folder.itemIds : folder.serviceIds;
+      bucket.add(String(docId));
+
+      const perCategory = kind === "Item" ? categoryItemIds : categoryServiceIds;
+      if (!perCategory.has(catId)) perCategory.set(catId, new Set());
+      perCategory.get(catId).add(String(docId));
+    }
+
+    const uncategorizedItemIds = [];
+    for (const item of items) {
+      if (!item.categoryDetails || item.categoryDetails.length === 0) {
+        uncategorizedItemIds.push(item._id);
+        continue;
+      }
+      for (const cd of item.categoryDetails) addToFolder(cd, "Item", item._id);
+    }
+
+    const uncategorizedServiceIds = [];
+    for (const svc of services) {
+      if (!svc.categoryDetails || svc.categoryDetails.length === 0) {
+        uncategorizedServiceIds.push(svc._id);
+        continue;
+      }
+      for (const cd of svc.categoryDetails) addToFolder(cd, "Service", svc._id);
+    }
+
+    const folders = [...folderMap.values()]
+      .map((f) => ({
+        categoryId: f.categoryId,
+        categoryName: f.categoryName,
+        subCategoryId: f.subCategoryId,
+        subCategoryName: f.subCategoryName,
+        color: f.color,
+        itemCount: f.itemIds.size,
+        serviceCount: f.serviceIds.size,
+        total: f.itemIds.size + f.serviceIds.size,
+      }))
+      .sort((a, b) => a.subCategoryName.localeCompare(b.subCategoryName));
+
+    const categoriesOut = categories
+      .map((c) => {
+        const catId = String(c._id);
+        const itemCount = categoryItemIds.get(catId)?.size ?? 0;
+        const serviceCount = categoryServiceIds.get(catId)?.size ?? 0;
+        return { _id: c._id, name: c.name, color: c.color, count: itemCount + serviceCount };
+      })
+      .filter((c) => c.count > 0);
+
+    const [uncategorizedItems, uncategorizedServices] = await Promise.all([
+      uncategorizedItemIds.length
+        ? decorateItems(
+            await Item.find({ _id: { $in: uncategorizedItemIds } }).select(
+              "name tamilName code salePrice isInventoryApplicable currentStock threshold isDeityMappingRequired isFamilyMembersRequired minQuantity maxQuantity categoryDetails"
+            )
+          )
+        : [],
+      uncategorizedServiceIds.length
+        ? decorateServices(
+            await Service.find({ _id: { $in: uncategorizedServiceIds } })
+              .populate("deityMapping", "name")
+              .select(
+                "name tamilName code categoryDetails isInventoryRequired currentStock thresholdCount isDeityMappingRequired deityMapping isFamilyMembersRequired minFamilyMembers maxFamilyMembers sessionRequired"
+              )
+          )
+        : [],
+    ]);
+
+    return responseHandler({
+      res,
+      response: {
+        categories: categoriesOut,
+        totalCount: items.length + services.length,
+        folders,
+        uncategorizedItems,
+        uncategorizedServices,
+      },
+    });
+  } catch (error) {
+    return exceptionHandler({ res, error });
+  }
+}
+
+/**
+ * GET /pos/booking/deities
+ * Full active Deity roster for the "which deity is this offering for" picker
+ * — Item carries no curated deity list of its own (only the
+ * isDeityMappingRequired flag), so both Items and Services draw from the
+ * same master list here rather than Service's own `deityMapping` curation.
+ */
+async function listDeities(req, res) {
+  try {
+    const deities = await Deity.find(Deity.notDeletedFilter({ status: 1 }))
+      .select("name tamilName")
+      .sort({ name: 1 });
+    return responseHandler({ res, response: { items: deities } });
+  } catch (error) {
+    return exceptionHandler({ res, error });
+  }
+}
+
+/**
+ * GET /pos/booking/nakshathirams
+ * Active Nakshathiram master, for the devotee-details Nakshatra dropdown —
+ * sourced from the real master (Nakshathiram Master) rather than a
+ * hardcoded list, and exposed under /pos so POS counter staff don't also
+ * need the Nakshathiram master's own view permission.
+ */
+async function listNakshathirams(req, res) {
+  try {
+    const rows = await Nakshathiram.find(Nakshathiram.notDeletedFilter({ status: 1 }))
+      .select("name tamilName rasi")
+      .sort({ displayOrder: 1, name: 1 });
+    return responseHandler({ res, response: { items: rows } });
   } catch (error) {
     return exceptionHandler({ res, error });
   }
@@ -315,7 +568,10 @@ async function bookingSummary(req, res) {
       const avail = await getAvailability(refType, refId);
       const available = avail.isInventoryApplicable ? avail.availableQty : Infinity;
 
-      const lineTotal = unitPrice * quantity;
+      // Deity-mapped lines price (and reserve) per selected deity, not per
+      // the raw `quantity` the client sent — see effectiveQuantity().
+      const qty = effectiveQuantity(line);
+      const lineTotal = unitPrice * qty;
       const lineGst = +(lineTotal * (gstRate / 100)).toFixed(2);
 
       subtotal += lineTotal;
@@ -326,7 +582,7 @@ async function bookingSummary(req, res) {
         refId,
         name,
         code,
-        quantity,
+        quantity: qty,
         unitPrice,
         gstRate,
         lineGst,
@@ -343,7 +599,7 @@ async function bookingSummary(req, res) {
             }
           : { isApplicable: false },
         availableForBooking: available,
-        quantityExceedsStock: avail.isInventoryApplicable && quantity > avail.availableQty,
+        quantityExceedsStock: avail.isInventoryApplicable && qty > avail.availableQty,
       });
     }
 
@@ -431,10 +687,15 @@ async function createOrder(req, res) {
         unitPrice = svc.categoryDetails[0]?.salePrice ?? 0;
       }
 
-      const lineTotal = unitPrice * quantity;
+      // Deity-mapped lines price (and later reserve/consume stock) per
+      // selected deity — see effectiveQuantity(). This value becomes the
+      // Order's stored line quantity, so the fix here also covers the
+      // reservation and stock-out steps below without touching them.
+      const qty = effectiveQuantity(line);
+      const lineTotal = unitPrice * qty;
       subtotal += lineTotal;
 
-      resolvedLines.push({ refType, refId, quantity, name, code, unitPrice, lineTotal, deities, devotees });
+      resolvedLines.push({ refType, refId, quantity: qty, name, code, unitPrice, lineTotal, deities, devotees });
     }
 
     const grandTotal = +(subtotal + totalGst).toFixed(2);
@@ -638,6 +899,12 @@ booking.get(
   requirePermission("admin-booking", "view"),
   searchCustomers
 );
+booking.post(
+  "/customers",
+  requirePermission("admin-booking", "fullAccess"),
+  validateBody(createCustomerSchema),
+  createWalkInCustomer
+);
 booking.get(
   "/items",
   requirePermission("admin-booking", "view"),
@@ -652,6 +919,21 @@ booking.get(
   "/payment-modes",
   requirePermission("admin-booking", "view"),
   listPaymentModes
+);
+booking.get(
+  "/catalogue",
+  requirePermission("admin-booking", "view"),
+  getCatalogue
+);
+booking.get(
+  "/deities",
+  requirePermission("admin-booking", "view"),
+  listDeities
+);
+booking.get(
+  "/nakshathirams",
+  requirePermission("admin-booking", "view"),
+  listNakshathirams
 );
 booking.post(
   "/summary",
