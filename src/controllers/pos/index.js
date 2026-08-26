@@ -930,21 +930,24 @@ async function createOrder(req, res) {
  * POST /pos/booking/orders/:id/confirm
  *
  * 1. Verify the order is still pending and not expired.
- * 2. Write the Booking (permanent confirmed record) + Transaction (payment/
- *    receipt record) + mark the Order confirmed, all inside one MongoDB
- *    transaction — either all three land or none do, so a mid-write crash
- *    can never leave a Booking with no matching Transaction, or an Order
- *    marked confirmed with no Booking behind it.
+ * 2. Write the Booking (permanent confirmed record), then the Transaction
+ *    (payment/receipt record), then mark the Order confirmed — plain
+ *    sequential writes, not a MongoDB multi-document transaction. A
+ *    transaction was tried here first for atomicity, but it measurably
+ *    added latency (its own start/commit round trips on top of an already
+ *    slow shared Atlas cluster — this was the actual cause of "Confirm
+ *    Booking" stalling in the browser). For this system's scale, a crash
+ *    landing exactly between these three writes is rare enough that a
+ *    best-effort cleanup (delete whatever landed, then re-throw so the
+ *    order stays retryable) is the better trade than paying transaction
+ *    overhead on every single booking.
  * 3. consumeReservations() — permanently decrement currentStock on each
  *    inventory-applicable ref and write InventoryAdjustment "Stock Out" rows.
- *    Runs after the transaction commits (inventory-reservation.js has no
- *    session support yet), matching this endpoint's existing behavior.
  *
  * For Cash, the frontend calls this immediately after createOrder succeeds.
  * For other payment modes (future), the payment gateway callback calls it.
  */
 async function confirmOrder(req, res) {
-  const session = await mongoose.startSession();
   try {
     const orderId = req.params.id;
     if (!mongoose.isValidObjectId(orderId)) throw "Invalid order ID.";
@@ -990,69 +993,59 @@ async function confirmOrder(req, res) {
       throw "Order expired — the 30-minute hold has lapsed. Please create a new order.";
     }
 
-    const bookingNumber = await generateBookingNumber();
-    const receiptNo = await generateReceiptNumber();
+    const [bookingNumber, receiptNo] = await Promise.all([generateBookingNumber(), generateReceiptNumber()]);
     const now = new Date();
     const customerId = order.customer._id ?? order.customer;
 
     let booking;
     let transaction;
-    await session.withTransaction(async () => {
+    try {
       // ── 1. Write Booking (permanent record) ──────────────────────────────
-      const created = await Booking.create(
-        [
-          {
-            bookingNumber,
-            orderId: order._id,
-            customer: customerId,
-            lines: order.lines,
-            subtotal: order.subtotal,
-            gstAmount: order.gstAmount,
-            grandTotal: order.grandTotal,
-            paymentMode: order.paymentMode,
-            paymentModeName: order.paymentModeName,
-            paymentStatus: "paid",
-            bookingStatus: "confirmed",
-            portal: order.portal,
-            bookedBy: order.bookedBy,
-            entity: order.entity,
-            bookedAt: now,
-            createdBy: order.bookedBy ?? null,
-          },
-        ],
-        { session }
-      );
-      booking = created[0];
+      booking = await Booking.create({
+        bookingNumber,
+        orderId: order._id,
+        customer: customerId,
+        lines: order.lines,
+        subtotal: order.subtotal,
+        gstAmount: order.gstAmount,
+        grandTotal: order.grandTotal,
+        paymentMode: order.paymentMode,
+        paymentModeName: order.paymentModeName,
+        paymentStatus: "paid",
+        bookingStatus: "confirmed",
+        portal: order.portal,
+        bookedBy: order.bookedBy,
+        entity: order.entity,
+        bookedAt: now,
+        createdBy: order.bookedBy ?? null,
+      });
 
       // ── 2. Write Transaction (payment/receipt record) ─────────────────────
-      const createdTxn = await Transaction.create(
-        [
-          {
-            receiptNo,
-            bookingId: booking._id,
-            orderId: order._id,
-            customer: customerId,
-            paymentMode: order.paymentMode,
-            paymentModeName: order.paymentModeName,
-            amount: order.grandTotal,
-            paymentStatus: "paid",
-            portal: order.portal,
-            transactionDate: now,
-            processedBy: order.bookedBy,
-            createdBy: order.bookedBy ?? null,
-          },
-        ],
-        { session }
-      );
-      transaction = createdTxn[0];
+      transaction = await Transaction.create({
+        receiptNo,
+        bookingId: booking._id,
+        orderId: order._id,
+        customer: customerId,
+        paymentMode: order.paymentMode,
+        paymentModeName: order.paymentModeName,
+        amount: order.grandTotal,
+        paymentStatus: "paid",
+        portal: order.portal,
+        transactionDate: now,
+        processedBy: order.bookedBy,
+        createdBy: order.bookedBy ?? null,
+      });
 
       // ── 3. Update Order ─────────────────────────────────────────────────
-      await Order.findByIdAndUpdate(
-        order._id,
-        { orderStatus: "confirmed", bookingId: booking._id },
-        { session }
-      );
-    });
+      await Order.findByIdAndUpdate(order._id, { orderStatus: "confirmed", bookingId: booking._id });
+    } catch (writeError) {
+      // Best-effort cleanup so a retry doesn't leave orphaned rows or try to
+      // confirm again against a half-written state — order stays "pending"
+      // (never touched above), so the client can safely retry the same order.
+      if (transaction) await Transaction.deleteOne({ _id: transaction._id }).catch(() => {});
+      if (booking) await Booking.deleteOne({ _id: booking._id }).catch(() => {});
+      throw writeError;
+    }
 
     // ── 4. Permanently decrement stock + consume reservations ────────────────
     await consumeReservations(
@@ -1094,8 +1087,6 @@ async function confirmOrder(req, res) {
     });
   } catch (error) {
     return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 400 : undefined });
-  } finally {
-    await session.endSession();
   }
 }
 
