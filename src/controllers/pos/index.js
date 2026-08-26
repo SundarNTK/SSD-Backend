@@ -15,6 +15,8 @@
  *   POST /pos/booking/summary                          — price + availability calc (no writes)
  *   POST /pos/booking/orders                            — create order + reserve inventory
  *   POST /pos/booking/orders/:id/confirm                — confirm order → booking + stock-out
+ *   GET  /pos/booking/bookings?search=&status=&portal=  — POS Transactions ledger
+ *   GET  /pos/booking/bookings/:id                      — full booking detail
  *
  * Inventory reservation lifecycle: see inventory-reservation.js.
  */
@@ -40,7 +42,7 @@ const Entity = require("../../models/entities");
 const { Customer } = require("../../models/customers");
 const PaymentMode = require("../../models/payment-modes");
 const { Order } = require("../../models/orders");
-const { Booking } = require("../../models/bookings");
+const { Booking, BOOKING_STATUSES } = require("../../models/bookings");
 
 const {
   placeReservationsForOrder,
@@ -728,6 +730,7 @@ async function createOrder(req, res) {
       paymentMode: paymentModeId,
       paymentModeName: paymentMode.name,
       orderStatus: "pending",
+      portal: "admin",
       expiresAt,
       bookedBy: req.auth?.userId ?? null,
       entity: req.auth?.entityId ?? null,
@@ -831,6 +834,7 @@ async function confirmOrder(req, res) {
       paymentModeName: order.paymentModeName,
       paymentStatus: "paid",
       bookingStatus: "confirmed",
+      portal: order.portal,
       bookedBy: order.bookedBy,
       entity: order.entity,
       bookedAt: now,
@@ -882,6 +886,103 @@ async function confirmOrder(req, res) {
     });
   } catch (error) {
     return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 400 : undefined });
+  }
+}
+
+// ─── POS Transactions (read-only ledger) ──────────────────────────────────────
+
+function deriveLineType(lines) {
+  const types = new Set((lines || []).map((l) => l.refType));
+  if (types.size === 0) return "—";
+  if (types.size === 1) return [...types][0];
+  return "Mixed";
+}
+
+/**
+ * GET /pos/booking/bookings?search=&status=&portal=&page=&pageSize=
+ *
+ * Read-only ledger backing the "POS Transactions" admin screen. Lists
+ * confirmed/cancelled Bookings — pending Orders that never got confirmed are
+ * abandoned holds, not transactions, so they don't appear here.
+ *
+ * `portal` distinguishes which surface created the booking ("admin" for both
+ * POS Portal and Admin Booking today — see models/orders' own comment; a
+ * future Customer Portal self-service flow would stamp "customer").
+ */
+async function listBookings(req, res) {
+  try {
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const pageSize = Math.min(100, Number(req.query.pageSize) || 20);
+
+    const filter = {};
+    if (req.query.status && BOOKING_STATUSES.includes(req.query.status)) {
+      filter.bookingStatus = req.query.status;
+    }
+    if (req.query.portal && ["admin", "customer"].includes(req.query.portal)) {
+      filter.portal = req.query.portal;
+    }
+    if (req.query.search) {
+      const regex = searchRegex(req.query.search);
+      const matchingCustomers = await Customer.find({ name: regex }).select("_id");
+      filter.$or = [{ bookingNumber: regex }, { customer: { $in: matchingCustomers.map((c) => c._id) } }];
+    }
+
+    const [bookings, total] = await Promise.all([
+      Booking.find(filter)
+        .populate("customer", "customerCode name email mobileNumber")
+        .populate("orderId", "orderNumber")
+        .select("bookingNumber orderId customer lines subtotal gstAmount grandTotal paymentModeName bookingStatus portal bookedAt")
+        .sort({ bookedAt: -1 })
+        .skip((page - 1) * pageSize)
+        .limit(pageSize),
+      Booking.countDocuments(filter),
+    ]);
+
+    const items = bookings.map((b) => ({
+      _id: b._id,
+      bookingNumber: b.bookingNumber,
+      orderNumber: b.orderId?.orderNumber ?? null,
+      customer: b.customer
+        ? { _id: b.customer._id, customerCode: b.customer.customerCode, name: b.customer.name }
+        : null,
+      lineType: deriveLineType(b.lines),
+      paymentModeName: b.paymentModeName,
+      subtotal: b.subtotal,
+      gstAmount: b.gstAmount,
+      grandTotal: b.grandTotal,
+      bookingStatus: b.bookingStatus,
+      portal: b.portal,
+      bookedAt: b.bookedAt,
+    }));
+
+    return responseHandler({ res, response: { items, total, page, pageSize } });
+  } catch (error) {
+    return exceptionHandler({ res, error });
+  }
+}
+
+/**
+ * GET /pos/booking/bookings/:id
+ * Full detail for one booking — every line (with deity/devotee breakdown),
+ * customer profile, order reference, and payment info.
+ */
+async function getBookingDetail(req, res) {
+  try {
+    const id = req.params.id;
+    if (!mongoose.isValidObjectId(id)) throw "Invalid booking ID.";
+
+    const booking = await Booking.findOne({ _id: id })
+      .populate("customer", "customerCode name email mobileNumber")
+      .populate("orderId", "orderNumber orderStatus")
+      .populate("paymentMode", "name")
+      .populate("lines.deities", "name")
+      .populate("bookedBy", "name email");
+
+    if (!booking) throw "Booking not found.";
+
+    return responseHandler({ res, response: booking });
+  } catch (error) {
+    return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 404 : undefined });
   }
 }
 
@@ -956,6 +1057,16 @@ booking.post(
   "/orders/:id/confirm",
   requirePermission("admin-booking", "fullAccess"),
   confirmOrder
+);
+booking.get(
+  "/bookings",
+  requirePermission("pos-transactions", "view"),
+  listBookings
+);
+booking.get(
+  "/bookings/:id",
+  requirePermission("pos-transactions", "view"),
+  getBookingDetail
 );
 
 router.use("/booking", booking);

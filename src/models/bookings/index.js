@@ -59,6 +59,11 @@ const bookingSchema = new mongoose.Schema({
 
   bookingStatus: { type: String, enum: BOOKING_STATUSES, default: "confirmed" },
 
+  // Copied from the originating Order at confirm time — which surface
+  // (staff-driven "admin" vs a future self-service "customer" flow)
+  // created this booking.
+  portal: { type: String, enum: ["admin", "customer"], default: "admin" },
+
   bookedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
   entity: { type: mongoose.Schema.Types.ObjectId, default: null },
   bookedAt: { type: Date, required: true },
@@ -69,6 +74,7 @@ bookingSchema.plugin(auditablePlugin);
 bookingSchema.index({ bookingNumber: 1 }, { unique: true });
 bookingSchema.index({ customer: 1, createdAt: -1 });
 bookingSchema.index({ bookingStatus: 1, createdAt: -1 });
+bookingSchema.index({ portal: 1, createdAt: -1 });
 bookingSchema.index({ orderId: 1 });
 
 module.exports = { Booking: mongoose.model("Booking", bookingSchema), BOOKING_STATUSES };

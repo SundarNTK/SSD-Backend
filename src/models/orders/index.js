@@ -64,6 +64,11 @@ const orderSchema = new mongoose.Schema({
 
   orderStatus: { type: String, enum: ORDER_STATUSES, default: "pending" },
 
+  // Which surface created this order — POS Portal and Admin Booking are
+  // both staff-driven, so both stamp "admin"; a future Customer Portal
+  // self-service flow would stamp "customer" from its own endpoint.
+  portal: { type: String, enum: ["admin", "customer"], default: "admin" },
+
   // Set when this order is confirmed and a Booking record is created
   bookingId: { type: mongoose.Schema.Types.ObjectId, ref: "Booking", default: null },
 

@@ -21,6 +21,7 @@
  *                      CRUD /notifications/email-template-mappings
  *   inventory        → GET /inventory/options, /available-stock, /low-stock, /history
  *                      POST /inventory/adjustments
+ *   pos-transactions → GET /pos/booking/bookings, /pos/booking/bookings/:id
  *
  * Level semantics, applied consistently by every route:
  *   view       → read-only (GET)
@@ -54,6 +55,7 @@ const AVAILABLE_MODULES = [
   { key: "payment-modes", label: "Payment Mode Master", group: "Masters" },
   { key: "inventory", label: "Inventory", group: "Inventory" },
   { key: "admin-booking", label: "Admin Booking", group: "Transactions" },
+  { key: "pos-transactions", label: "POS Transactions", group: "Transactions" },
 ];
 
 const MODULE_KEYS = AVAILABLE_MODULES.map((m) => m.key);
