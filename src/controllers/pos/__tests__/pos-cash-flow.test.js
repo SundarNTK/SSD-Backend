@@ -16,15 +16,28 @@
 jest.mock("../inventory-reservation");
 jest.mock("../../../common/utils/sequence");
 
+const mongoose = require("mongoose");
 const Item = require("../../../models/items");
 const Service = require("../../../models/services");
 const { Customer } = require("../../../models/customers");
 const PaymentMode = require("../../../models/payment-modes");
 const { Order } = require("../../../models/orders");
 const { Booking } = require("../../../models/bookings");
+const { Transaction } = require("../../../models/transactions");
 const { placeReservationsForOrder, consumeReservations, cancelReservations } = require("../inventory-reservation");
 const { nextSequence } = require("../../../common/utils/sequence");
 const { createOrder, confirmOrder, effectiveQuantity } = require("../index");
+
+const RECEIPT_NO = "RCP-20260826-0001";
+
+/** confirmOrder wraps its writes in a real Mongo session/transaction —
+ *  mocked here so tests never try to negotiate an actual replica-set
+ *  session against a DB connection that doesn't exist in this test run.
+ *  withTransaction just runs the callback inline, no rollback semantics
+ *  needed since the individual model calls are already mocked. */
+function mockSession() {
+  return { withTransaction: async (fn) => fn(), endSession: jest.fn(async () => {}) };
+}
 
 const CUSTOMER_ID = "aaaaaaaaaaaaaaaaaaaaaaaa";
 const PAYMENT_MODE_ID = "bbbbbbbbbbbbbbbbbbbbbbbb";
@@ -220,10 +233,14 @@ describe("confirmOrder (Cash flow)", () => {
   beforeEach(() => {
     jest.clearAllMocks();
 
+    mongoose.startSession = jest.fn(async () => mockSession());
+
     Order.findOne = jest.fn(() => mockQuery(pendingOrder()));
     Order.findByIdAndUpdate = jest.fn(async () => {});
-    Booking.create = jest.fn(async (doc) => ({ _id: BOOKING_ID, ...doc }));
+    Booking.create = jest.fn(async (docs) => docs.map((d) => ({ _id: BOOKING_ID, ...d })));
     Booking.findById = jest.fn(() => mockQuery(null));
+    Transaction.create = jest.fn(async (docs) => docs.map((d) => ({ _id: "999999999999999999999999", ...d })));
+    Transaction.findOne = jest.fn(() => mockQuery(null));
     Customer.findById = jest.fn(() => mockQuery(validCustomer));
 
     nextSequence.mockResolvedValue(4);
@@ -231,30 +248,41 @@ describe("confirmOrder (Cash flow)", () => {
     cancelReservations.mockResolvedValue(undefined);
   });
 
-  it("confirms a pending Cash order: creates the booking, marks the order confirmed, and consumes stock", async () => {
+  it("confirms a pending Cash order: creates the booking + transaction, marks the order confirmed, and consumes stock", async () => {
     const req = { params: { id: ORDER_ID }, body: {} };
     const res = mockRes();
 
     await confirmOrder(req, res);
 
     expect(Booking.create).toHaveBeenCalledWith(
-      expect.objectContaining({ orderId: ORDER_ID, paymentStatus: "paid", bookingStatus: "confirmed", grandTotal: 175 })
+      [expect.objectContaining({ orderId: ORDER_ID, paymentStatus: "paid", bookingStatus: "confirmed", grandTotal: 175 })],
+      expect.objectContaining({ session: expect.anything() })
     );
-    expect(Order.findByIdAndUpdate).toHaveBeenCalledWith(ORDER_ID, { orderStatus: "confirmed", bookingId: BOOKING_ID });
+    expect(Transaction.create).toHaveBeenCalledWith(
+      [expect.objectContaining({ bookingId: BOOKING_ID, orderId: ORDER_ID, amount: 175, paymentStatus: "paid" })],
+      expect.objectContaining({ session: expect.anything() })
+    );
+    expect(Order.findByIdAndUpdate).toHaveBeenCalledWith(
+      ORDER_ID,
+      { orderStatus: "confirmed", bookingId: BOOKING_ID },
+      expect.objectContaining({ session: expect.anything() })
+    );
     expect(consumeReservations).toHaveBeenCalledWith(ORDER_ID, expect.any(Array), USER_ID, expect.any(String));
     expect(res.status).toHaveBeenCalledWith(201);
     expect(res.json).toHaveBeenCalledWith(
       expect.objectContaining({
         success: true,
-        data: expect.objectContaining({ bookingStatus: "confirmed", paymentStatus: "paid", grandTotal: 175 }),
+        data: expect.objectContaining({ bookingStatus: "confirmed", paymentStatus: "paid", grandTotal: 175, receiptNo: expect.any(String) }),
       })
     );
   });
 
-  it("is idempotent: re-confirming an already-confirmed order returns the existing booking without creating a new one", async () => {
-    const existingBooking = { _id: BOOKING_ID, bookingNumber: "BKG202608260004", bookingStatus: "confirmed" };
+  it("is idempotent: re-confirming an already-confirmed order returns the existing booking + its receipt without creating a new one", async () => {
+    const existingBookingData = { _id: BOOKING_ID, bookingNumber: "BKG202608260004", bookingStatus: "confirmed" };
+    const existingBooking = { ...existingBookingData, toObject: () => existingBookingData };
     Order.findOne = jest.fn(() => mockQuery(pendingOrder({ orderStatus: "confirmed", bookingId: BOOKING_ID })));
     Booking.findById = jest.fn(() => mockQuery(existingBooking));
+    Transaction.findOne = jest.fn(() => mockQuery({ receiptNo: RECEIPT_NO }));
 
     const req = { params: { id: ORDER_ID }, body: {} };
     const res = mockRes();
@@ -262,8 +290,11 @@ describe("confirmOrder (Cash flow)", () => {
     await confirmOrder(req, res);
 
     expect(Booking.create).not.toHaveBeenCalled();
+    expect(Transaction.create).not.toHaveBeenCalled();
     expect(res.status).not.toHaveBeenCalledWith(201);
-    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true, data: existingBooking }));
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ success: true, data: expect.objectContaining({ ...existingBookingData, receiptNo: RECEIPT_NO }) })
+    );
   });
 
   it("rejects confirming a cancelled order", async () => {

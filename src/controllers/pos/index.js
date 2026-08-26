@@ -2,21 +2,29 @@
  * POS / Admin Booking controller
  * Mounted at /pos — see routes/index.js.
  *
- * Endpoints:
+ * The same handler set is registered on two route trees, one per calling
+ * surface, so the portal stamp on every Order/Booking/Transaction can be
+ * derived server-side from the route rather than trusted from the client
+ * body (see setPortal()/registerBookingRoutes() near the bottom):
  *
- *   GET  /pos/booking/customers/search?query=          — quick customer lookup
- *   POST /pos/booking/customers                        — create a walk-in devotee profile
- *   GET  /pos/booking/items?search=&category=&subCategory=    — POS item picker
- *   GET  /pos/booking/services?search=&category=&subCategory= — POS service picker
- *   GET  /pos/booking/catalogue                        — category tabs + sub-category folders
- *   GET  /pos/booking/deities                          — active deity roster
- *   GET  /pos/booking/nakshathirams                    — active nakshathiram roster
- *   GET  /pos/booking/payment-modes                    — active payment modes
- *   POST /pos/booking/summary                          — price + availability calc (no writes)
- *   POST /pos/booking/orders                            — create order + reserve inventory
- *   POST /pos/booking/orders/:id/confirm                — confirm order → booking + stock-out
- *   GET  /pos/booking/bookings?search=&status=&portal=  — POS Transactions ledger
- *   GET  /pos/booking/bookings/:id                      — full booking detail
+ *   /pos/booking/*        — POS Portal counter terminal → portal: "pos"
+ *   /pos/admin/booking/*  — Admin Panel booking screen  → portal: "admin"
+ *
+ * Endpoints (identical shape under either prefix above):
+ *
+ *   GET  /customers/search?query=          — quick customer lookup
+ *   POST /customers                        — create a walk-in devotee profile
+ *   GET  /items?search=&category=&subCategory=    — POS item picker
+ *   GET  /services?search=&category=&subCategory= — POS service picker
+ *   GET  /catalogue                        — category tabs + sub-category folders
+ *   GET  /deities                          — active deity roster
+ *   GET  /nakshathirams                    — active nakshathiram roster
+ *   GET  /payment-modes                    — active payment modes
+ *   POST /summary                          — price + availability calc (no writes)
+ *   POST /orders                           — create order + reserve inventory
+ *   POST /orders/:id/confirm               — confirm order → Booking + Transaction + stock-out
+ *   GET  /bookings?search=&status=&portal= — POS Transactions ledger
+ *   GET  /bookings/:id                     — full booking + transaction detail
  *
  * Inventory reservation lifecycle: see inventory-reservation.js.
  */
@@ -901,7 +909,7 @@ async function confirmOrder(req, res) {
             paymentMode: order.paymentMode,
             paymentModeName: order.paymentModeName,
             amount: order.grandTotal,
-            status: "paid",
+            paymentStatus: "paid",
             portal: order.portal,
             transactionDate: now,
             processedBy: order.bookedBy,
@@ -1001,8 +1009,15 @@ async function listBookings(req, res) {
     }
     if (req.query.search) {
       const regex = searchRegex(req.query.search);
-      const matchingCustomers = await Customer.find({ name: regex }).select("_id");
-      filter.$or = [{ bookingNumber: regex }, { customer: { $in: matchingCustomers.map((c) => c._id) } }];
+      const [matchingCustomers, matchingTransactions] = await Promise.all([
+        Customer.find({ name: regex }).select("_id"),
+        Transaction.find({ receiptNo: regex }).select("bookingId"),
+      ]);
+      filter.$or = [
+        { bookingNumber: regex },
+        { customer: { $in: matchingCustomers.map((c) => c._id) } },
+        { _id: { $in: matchingTransactions.map((t) => t.bookingId) } },
+      ];
     }
 
     const [bookings, total] = await Promise.all([
@@ -1016,9 +1031,17 @@ async function listBookings(req, res) {
       Booking.countDocuments(filter),
     ]);
 
+    // Receipt numbers live on Transaction, not Booking (see models/transactions'
+    // own comment on why) — one batched lookup instead of populate, since
+    // Booking↔Transaction isn't a declared ref in either direction.
+    const bookingIds = bookings.map((b) => b._id);
+    const transactions = await Transaction.find({ bookingId: { $in: bookingIds } }).select("bookingId receiptNo");
+    const receiptByBooking = new Map(transactions.map((t) => [String(t.bookingId), t.receiptNo]));
+
     const items = bookings.map((b) => ({
       _id: b._id,
       bookingNumber: b.bookingNumber,
+      receiptNo: receiptByBooking.get(String(b._id)) ?? null,
       orderNumber: b.orderId?.orderNumber ?? null,
       customer: b.customer
         ? { _id: b.customer._id, customerCode: b.customer.customerCode, name: b.customer.name }
@@ -1059,7 +1082,7 @@ async function getBookingDetail(req, res) {
         .populate("lines.deities", "name")
         .populate("bookedBy", "name email"),
       Transaction.findOne({ bookingId: id }).select(
-        "receiptNo amount status paymentModeName transactionDate processedBy"
+        "receiptNo amount paymentStatus paymentModeName transactionDate processedBy"
       ),
     ]);
 
