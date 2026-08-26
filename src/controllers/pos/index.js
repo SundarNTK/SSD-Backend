@@ -13,7 +13,9 @@
  * Endpoints (identical shape under either prefix above):
  *
  *   GET  /customers/search?query=          — quick customer lookup
- *   POST /customers                        — create a walk-in devotee profile
+ *   GET  /customers/lookup?mobileNumber=   — exact match on an unregistered walk-in, for Create Customer auto-fill
+ *   POST /customers                        — create a walk-in devotee profile (isRegistered: false)
+ *   GET  /customers/:id/recent-bookings    — last N confirmed bookings, for "repeat a past booking"
  *   GET  /items?search=&category=&subCategory=    — POS item picker
  *   GET  /services?search=&category=&subCategory= — POS service picker
  *   GET  /catalogue                        — category tabs + sub-category folders
@@ -21,6 +23,7 @@
  *   GET  /nakshathirams                    — active nakshathiram roster
  *   GET  /payment-modes                    — active payment modes
  *   POST /summary                          — price + availability calc (no writes)
+ *   POST /recheck-lines                    — re-validate past lines against the live catalogue
  *   POST /orders                           — create order + reserve inventory
  *   POST /orders/:id/confirm               — confirm order → Booking + Transaction + stock-out
  *   GET  /bookings?search=&status=&portal= — POS Transactions ledger
@@ -199,6 +202,11 @@ async function createWalkInCustomer(req, res) {
       mobileNumber: mobileNumber || null,
       dateOfBirth: dateOfBirth || null,
       gender: gender || null,
+      // A walk-in starts unregistered — see models/customers' own comment.
+      // A repeat visit on the same mobile is matched and reused (GET
+      // .../customers/lookup) rather than hitting the mobile-uniqueness
+      // error below a second time.
+      isRegistered: false,
     });
     customer.createdBy = req.auth?.userId || null;
     await customer.save();
@@ -209,6 +217,30 @@ async function createWalkInCustomer(req, res) {
       return exceptionHandler({ res, error: "Those details are already used by another profile.", statusCode: 409 });
     }
     return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 400 : undefined });
+  }
+}
+
+/**
+ * GET /pos/booking/customers/lookup?mobileNumber=
+ * Exact-match lookup for the Create Customer form's auto-fill — as the
+ * counter types a mobile number, this finds a matching *unregistered*
+ * walk-in profile so a repeat visit reuses it instead of hitting the
+ * mobile-uniqueness error on a second POST. Scoped to isRegistered: false
+ * on purpose: a real registration is never silently pulled into the walk-in
+ * create form this way — reusing one of those goes through customer search.
+ */
+async function lookupCustomerByMobile(req, res) {
+  try {
+    const mobileNumber = (req.query.mobileNumber || "").trim();
+    if (!mobileNumber) return responseHandler({ res, response: null });
+
+    const customer = await Customer.findOne(
+      Customer.notDeletedFilter({ mobileNumber, status: 1, isRegistered: false })
+    ).select("customerCode name email mobileNumber dateOfBirth gender");
+
+    return responseHandler({ res, response: customer });
+  } catch (error) {
+    return exceptionHandler({ res, error });
   }
 }
 
@@ -1229,6 +1261,7 @@ function setPortal(portalValue) {
 function registerBookingRoutes(r) {
   // ── Lookup / catalogue (read) ──────────────────────────────────────────
   r.get("/customers/search",    requirePermission("admin-booking", "view"),       searchCustomers);
+  r.get("/customers/lookup",    requirePermission("admin-booking", "view"),       lookupCustomerByMobile);
   r.post("/customers",          requirePermission("admin-booking", "fullAccess"), validateBody(createCustomerSchema), createWalkInCustomer);
   r.get("/customers/:id/recent-bookings", requirePermission("admin-booking", "view"), getRecentBookings);
   r.get("/items",               requirePermission("admin-booking", "view"),       listPosItems);

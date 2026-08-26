@@ -44,6 +44,16 @@ const customerSchema = new mongoose.Schema({
 
   familyMembers: { type: [familyMemberSchema], default: [] },
   maxFamilyMembers: { type: Number, default: 5 },
+
+  // A walk-in profile created at the POS counter starts unregistered — it's
+  // a placeholder the counter can reuse and fill in further on a repeat
+  // visit (matched by mobile number; see GET /pos/booking/customers/lookup)
+  // without creating a duplicate. Every other creation path (public
+  // registration, admin-created, seed data) is a real registration and sets
+  // this true from the start; once true, a profile is never matched for
+  // walk-in auto-fill again — reuse at that point goes through the normal
+  // customer search instead.
+  isRegistered: { type: Boolean, default: true },
 });
 
 customerSchema.plugin(auditablePlugin);
