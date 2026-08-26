@@ -211,7 +211,7 @@ async function listPosItems(req, res) {
         .populate("categoryDetails.subCategory", "name")
         .populate("generalLedger", "gstType")
         .populate("deityMapping", "name")
-        .select("name tamilName code salePrice isInventoryApplicable currentStock threshold isDeityMappingRequired deityMapping isFamilyMembersRequired minFamilyMembers maxFamilyMembers minQuantity maxQuantity categoryDetails")
+        .select("name tamilName code salePrice isInventoryApplicable currentStock threshold isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers minQuantity maxQuantity categoryDetails")
         .sort({ name: 1 })
         .skip((page - 1) * pageSize)
         .limit(pageSize),
@@ -252,7 +252,7 @@ async function listPosServices(req, res) {
         .populate("categoryDetails.category", "name color")
         .populate("categoryDetails.subCategory", "name")
         .populate("deityMapping", "name")
-        .select("name tamilName code categoryDetails isInventoryRequired currentStock thresholdCount isDeityMappingRequired deityMapping isFamilyMembersRequired minFamilyMembers maxFamilyMembers sessionRequired")
+        .select("name tamilName code categoryDetails isInventoryRequired currentStock thresholdCount isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers sessionRequired")
         .sort({ name: 1 })
         .skip((page - 1) * pageSize)
         .limit(pageSize),
@@ -285,7 +285,6 @@ async function decorateItems(items) {
         isDeityMappingRequired: item.isDeityMappingRequired,
         deityMapping: item.deityMapping,
         isFamilyMembersRequired: item.isFamilyMembersRequired,
-        minFamilyMembers: item.minFamilyMembers,
         maxFamilyMembers: item.maxFamilyMembers,
         minQuantity: item.minQuantity,
         maxQuantity: item.maxQuantity,
@@ -313,7 +312,6 @@ async function decorateServices(services) {
         isDeityMappingRequired: svc.isDeityMappingRequired,
         deityMapping: svc.deityMapping,
         isFamilyMembersRequired: svc.isFamilyMembersRequired,
-        minFamilyMembers: svc.minFamilyMembers,
         maxFamilyMembers: svc.maxFamilyMembers,
         sessionRequired: svc.sessionRequired,
         inventory: avail,
@@ -447,7 +445,7 @@ async function getCatalogue(req, res) {
             await Item.find({ _id: { $in: uncategorizedItemIds } })
               .populate("deityMapping", "name")
               .select(
-                "name tamilName code salePrice isInventoryApplicable currentStock threshold isDeityMappingRequired deityMapping isFamilyMembersRequired minFamilyMembers maxFamilyMembers minQuantity maxQuantity categoryDetails"
+                "name tamilName code salePrice isInventoryApplicable currentStock threshold isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers minQuantity maxQuantity categoryDetails"
               )
           )
         : [],
@@ -456,7 +454,7 @@ async function getCatalogue(req, res) {
             await Service.find({ _id: { $in: uncategorizedServiceIds } })
               .populate("deityMapping", "name")
               .select(
-                "name tamilName code categoryDetails isInventoryRequired currentStock thresholdCount isDeityMappingRequired deityMapping isFamilyMembersRequired minFamilyMembers maxFamilyMembers sessionRequired"
+                "name tamilName code categoryDetails isInventoryRequired currentStock thresholdCount isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers sessionRequired"
               )
           )
         : [],

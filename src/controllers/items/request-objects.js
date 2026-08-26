@@ -60,12 +60,7 @@ const createSchema = Joi.object({
 
   futureBookingCutOffDate: Joi.date().allow(null).default(null),
   isFamilyMembersRequired: Joi.boolean().default(false),
-  minFamilyMembers: Joi.number().integer().min(0).default(1),
-  maxFamilyMembers: Joi.number()
-    .integer()
-    .min(Joi.ref("minFamilyMembers"))
-    .default(1)
-    .messages({ "number.min": "Maximum family members can't be less than the minimum." }),
+  maxFamilyMembers: Joi.number().integer().min(1).default(2),
   posAvailability: Joi.boolean().default(true),
   customerPortalAvailability: Joi.boolean().default(true),
 
@@ -97,11 +92,7 @@ const updateSchema = Joi.object({
 
   futureBookingCutOffDate: Joi.date().allow(null),
   isFamilyMembersRequired: Joi.boolean(),
-  minFamilyMembers: Joi.number().integer().min(0),
-  maxFamilyMembers: Joi.number()
-    .integer()
-    .min(Joi.ref("minFamilyMembers"))
-    .messages({ "number.min": "Maximum family members can't be less than the minimum." }),
+  maxFamilyMembers: Joi.number().integer().min(1),
   posAvailability: Joi.boolean(),
   customerPortalAvailability: Joi.boolean(),
 

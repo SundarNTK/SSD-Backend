@@ -42,8 +42,7 @@ const itemSchema = new mongoose.Schema({
 
   futureBookingCutOffDate: { type: Date, default: null },
   isFamilyMembersRequired: { type: Boolean, default: false },
-  minFamilyMembers: { type: Number, default: 1 },
-  maxFamilyMembers: { type: Number, default: 1 },
+  maxFamilyMembers: { type: Number, default: 2 },
   posAvailability: { type: Boolean, default: true },
   customerPortalAvailability: { type: Boolean, default: true },
 });

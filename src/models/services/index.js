@@ -31,8 +31,7 @@ const serviceSchema = new mongoose.Schema({
   generalLedger: { type: mongoose.Schema.Types.ObjectId, ref: "GeneralLedger", required: true },
 
   isFamilyMembersRequired: { type: Boolean, default: false },
-  minFamilyMembers: { type: Number, default: 1 },
-  maxFamilyMembers: { type: Number, default: 1 },
+  maxFamilyMembers: { type: Number, default: 2 },
 
   sessionRequired: { type: Boolean, default: false },
 
