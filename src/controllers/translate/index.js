@@ -67,6 +67,59 @@ async function translateText(req, res) {
   }
 }
 
+// Small in-memory cache for transliteration lookups too — same rationale
+// as the translate cache above, separate Map since the two are keyed and
+// shaped differently (candidate list vs. a single string).
+const transliterateCache = new Map();
+
+/**
+ * Live "type Latin letters, pick the Tamil spelling" suggestions for the
+ * Tamil Name field itself — e.g. "kovil" -> ["கோவில்", "கோயில்", ...].
+ * This is transliteration (phonetic spelling), not translation (meaning),
+ * so it's a different Google endpoint: the one behind Google's own Input
+ * Tools / Tamil keyboard. Also free and key-less, and — unlike
+ * translate_a/single — hasn't been rate-limiting this server's IP.
+ */
+async function transliterateText(req, res) {
+  try {
+    const text = String(req.query.text ?? "").trim();
+    if (!text) return responseHandler({ res, response: { candidates: [] } });
+
+    const cacheKey = text.toLowerCase();
+    if (transliterateCache.has(cacheKey)) {
+      return responseHandler({ res, response: { candidates: transliterateCache.get(cacheKey) } });
+    }
+
+    const url = `https://inputtools.google.com/request?text=${encodeURIComponent(text)}&itc=ta-t-i0-und&num=5&cp=0&cs=1&ie=utf-8&oe=utf-8`;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 4000);
+    let candidates = [];
+    try {
+      const apiRes = await fetch(url, { signal: controller.signal });
+      if (apiRes.ok) {
+        const body = await apiRes.json();
+        // Response shape: ["SUCCESS", [[ "input", ["candidate1", "candidate2", ...], ...]]]
+        if (body?.[0] === "SUCCESS") {
+          candidates = body?.[1]?.[0]?.[1] ?? [];
+        }
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    if (candidates.length > 0) {
+      if (transliterateCache.size >= CACHE_LIMIT) transliterateCache.delete(transliterateCache.keys().next().value);
+      transliterateCache.set(cacheKey, candidates);
+    }
+
+    return responseHandler({ res, response: { candidates } });
+  } catch (error) {
+    return responseHandler({ res, response: { candidates: [] } });
+  }
+}
+
 router.get("/translate", translateText);
+router.get("/transliterate", transliterateText);
 
 module.exports = router;
