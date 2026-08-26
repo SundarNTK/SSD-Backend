@@ -66,6 +66,7 @@ const {
   confirmOrderSchema,
   customerSearchSchema,
   createCustomerSchema,
+  recheckLinesSchema,
 } = require("./request-objects");
 
 const mongoose = require("mongoose");
@@ -179,7 +180,7 @@ async function createWalkInCustomer(req, res) {
     const { error, value } = createCustomerSchema.validate(req.body);
     if (error) throw error.details[0].message;
 
-    const { name, email, mobileNumber } = value;
+    const { name, email, mobileNumber, dateOfBirth, gender } = value;
 
     const emailTaken = await Customer.exists(Customer.notDeletedFilter({ email }));
     if (emailTaken) throw "A devotee profile already uses this email.";
@@ -191,7 +192,14 @@ async function createWalkInCustomer(req, res) {
     const entityId = req.auth?.entityId || (await Entity.findOne({ code: env.DEFAULT_ENTITY_CODE }))?._id;
     if (!entityId) throw "No temple entity is configured.";
 
-    const customer = await createCustomerProfile({ entityId, name, email, mobileNumber: mobileNumber || null });
+    const customer = await createCustomerProfile({
+      entityId,
+      name,
+      email,
+      mobileNumber: mobileNumber || null,
+      dateOfBirth: dateOfBirth || null,
+      gender: gender || null,
+    });
     customer.createdBy = req.auth?.userId || null;
     await customer.save();
 
@@ -200,6 +208,31 @@ async function createWalkInCustomer(req, res) {
     if (error?.code === 11000) {
       return exceptionHandler({ res, error: "Those details are already used by another profile.", statusCode: 409 });
     }
+    return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 400 : undefined });
+  }
+}
+
+/**
+ * GET /pos/booking/customers/:id/recent-bookings?limit=3
+ * The counter's "repeat a past booking" feature — last N confirmed
+ * bookings for a customer, with full line detail so the frontend can offer
+ * to re-add them to the cart (after re-checking live availability via
+ * recheckLines(), since the catalogue may have moved on since then).
+ */
+async function getRecentBookings(req, res) {
+  try {
+    const customerId = req.params.id;
+    if (!mongoose.isValidObjectId(customerId)) throw "Invalid customer ID.";
+    const limit = Math.min(10, Math.max(1, Number(req.query.limit) || 3));
+
+    const bookings = await Booking.find({ customer: customerId, bookingStatus: "confirmed" })
+      .select("bookingNumber lines grandTotal bookedAt")
+      .populate("lines.deities", "name")
+      .sort({ bookedAt: -1 })
+      .limit(limit);
+
+    return responseHandler({ res, response: { items: bookings } });
+  } catch (error) {
     return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 400 : undefined });
   }
 }
@@ -649,6 +682,67 @@ async function bookingSummary(req, res) {
         hasStockIssues: resolvedLines.some((l) => l.quantityExceedsStock),
       },
     });
+  } catch (error) {
+    return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 400 : undefined });
+  }
+}
+
+/**
+ * POST /pos/booking/recheck-lines
+ *
+ * Same per-line lookups as bookingSummary(), but tolerant — used by the
+ * "repeat a past booking" flow, where some lines from an old order may no
+ * longer be valid (deactivated, no longer POS-available, or genuinely out
+ * of stock) while others still are. Unlike bookingSummary(), a bad line
+ * never throws; it comes back with `available: false` and a reason so the
+ * caller can offer "add just the available ones" instead of an all-or-
+ * nothing failure.
+ */
+async function recheckLines(req, res) {
+  try {
+    const { error, value } = recheckLinesSchema.validate(req.body);
+    if (error) throw error.details[0].message;
+
+    const results = await Promise.all(
+      value.lines.map(async (line) => {
+        const { refType, refId, quantity, deities, devotees } = line;
+        const base = { refType, refId, quantity, deities, devotees };
+
+        let name, code, unitPrice;
+        if (refType === "Item") {
+          const item = await Item.findOne(Item.notDeletedFilter({ _id: refId, status: 1, posAvailability: true }));
+          if (!item) return { ...base, available: false, reason: "No longer available for sale." };
+          name = item.name;
+          code = item.code;
+          unitPrice = item.salePrice;
+        } else {
+          const svc = await Service.findOne(Service.notDeletedFilter({ _id: refId, status: 1, isPosAvailable: true }));
+          if (!svc) return { ...base, available: false, reason: "No longer available for sale." };
+          name = svc.name;
+          code = svc.code;
+          unitPrice = svc.categoryDetails[0]?.salePrice ?? 0;
+        }
+
+        const qty = effectiveQuantity(line);
+        const avail = await getAvailability(refType, refId);
+        if (avail.isInventoryApplicable && qty > avail.availableQty) {
+          return {
+            ...base,
+            available: false,
+            name,
+            code,
+            reason:
+              avail.availableQty > 0
+                ? `Only ${avail.availableQty} available (need ${qty}).`
+                : "Out of stock.",
+          };
+        }
+
+        return { ...base, available: true, name, code, unitPrice, lineTotal: +(unitPrice * qty).toFixed(2), quantity: qty };
+      })
+    );
+
+    return responseHandler({ res, response: { lines: results } });
   } catch (error) {
     return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 400 : undefined });
   }
@@ -1136,6 +1230,7 @@ function registerBookingRoutes(r) {
   // ── Lookup / catalogue (read) ──────────────────────────────────────────
   r.get("/customers/search",    requirePermission("admin-booking", "view"),       searchCustomers);
   r.post("/customers",          requirePermission("admin-booking", "fullAccess"), validateBody(createCustomerSchema), createWalkInCustomer);
+  r.get("/customers/:id/recent-bookings", requirePermission("admin-booking", "view"), getRecentBookings);
   r.get("/items",               requirePermission("admin-booking", "view"),       listPosItems);
   r.get("/services",            requirePermission("admin-booking", "view"),       listPosServices);
   r.get("/payment-modes",       requirePermission("admin-booking", "view"),       listPaymentModes);
@@ -1145,6 +1240,7 @@ function registerBookingRoutes(r) {
 
   // ── Booking flow (write) ───────────────────────────────────────────────
   r.post("/summary",            requirePermission("admin-booking", "view"),       validateBody(summarySchema),      bookingSummary);
+  r.post("/recheck-lines",      requirePermission("admin-booking", "view"),       validateBody(recheckLinesSchema), recheckLines);
   r.post("/orders",             requirePermission("admin-booking", "fullAccess"), validateBody(createOrderSchema),  createOrder);
   r.post("/orders/:id/confirm", requirePermission("admin-booking", "fullAccess"),                                   confirmOrder);
 

@@ -1,4 +1,5 @@
 const Joi = require("joi");
+const { GENDERS } = require("../../models/customers");
 
 /**
  * Validation schemas for all POS / Admin Booking request bodies.
@@ -53,6 +54,15 @@ const confirmOrderSchema = Joi.object({
 });
 
 /**
+ * POST /pos/booking/recheck-lines
+ * Re-validates a set of lines (from a past booking) against the live
+ * catalogue — see recheckLines() for why this doesn't throw per-line.
+ */
+const recheckLinesSchema = Joi.object({
+  lines: Joi.array().items(cartLineSchema).min(1).required(),
+});
+
+/**
  * GET /pos/booking/customers/search
  * Quick customer lookup for the "Personal Details" section.
  * Accepts ?query=<mobile|email|name>
@@ -64,12 +74,22 @@ const customerSearchSchema = Joi.object({
 /**
  * POST /pos/booking/customers
  * Creates a walk-in devotee profile at the counter — mirrors Customer's own
- * required-field shape (name + email required, mobile optional).
+ * required-field shape (name + email required, mobile optional) plus the
+ * same optional fields the Admin Panel's Customer master captures
+ * (dateOfBirth, gender), so a walk-in profile isn't a lesser record than
+ * one created any other way.
  */
 const createCustomerSchema = Joi.object({
   name: Joi.string().trim().min(1).max(150).required(),
   email: Joi.string().trim().email({ tlds: false }).required(),
   mobileNumber: Joi.string().trim().allow("", null).default(null),
+  dateOfBirth: Joi.date().iso().max("now").allow(null).default(null).messages({
+    "date.max": "Date of birth can't be in the future.",
+  }),
+  gender: Joi.string()
+    .valid(...GENDERS)
+    .allow(null)
+    .default(null),
 });
 
 module.exports = {
@@ -78,4 +98,5 @@ module.exports = {
   confirmOrderSchema,
   customerSearchSchema,
   createCustomerSchema,
+  recheckLinesSchema,
 };
