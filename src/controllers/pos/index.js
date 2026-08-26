@@ -258,12 +258,22 @@ async function getRecentBookings(req, res) {
     const limit = Math.min(10, Math.max(1, Number(req.query.limit) || 3));
 
     const bookings = await Booking.find({ customer: customerId, bookingStatus: "confirmed" })
-      .select("bookingNumber lines grandTotal bookedAt")
+      .select("bookingNumber orderId lines grandTotal bookedAt")
+      .populate("orderId", "orderNumber")
       .populate("lines.deities", "name")
       .sort({ bookedAt: -1 })
       .limit(limit);
 
-    return responseHandler({ res, response: { items: bookings } });
+    const items = bookings.map((b) => ({
+      _id: b._id,
+      bookingNumber: b.bookingNumber,
+      orderNumber: b.orderId?.orderNumber ?? null,
+      lines: b.lines,
+      grandTotal: b.grandTotal,
+      bookedAt: b.bookedAt,
+    }));
+
+    return responseHandler({ res, response: { items } });
   } catch (error) {
     return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 400 : undefined });
   }
