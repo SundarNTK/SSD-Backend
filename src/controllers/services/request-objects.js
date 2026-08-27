@@ -45,6 +45,7 @@ const createSchema = Joi.object({
 
   isDeityMappingRequired: Joi.boolean().default(false),
   deityMapping: deityMappingField,
+  printingGroup: objectId.required(),
 
   categoryDetails: Joi.array().items(categoryDetailEntry).default([]),
 
@@ -74,6 +75,7 @@ const updateSchema = Joi.object({
 
   isDeityMappingRequired: Joi.boolean(),
   deityMapping: deityMappingFieldForUpdate,
+  printingGroup: objectId,
 
   categoryDetails: Joi.array().items(categoryDetailEntry),
 

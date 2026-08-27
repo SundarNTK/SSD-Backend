@@ -8,6 +8,7 @@ const { createSchema, updateSchema } = require("./request-objects");
 
 const POPULATE = [
   { path: "generalLedger", select: "name code" },
+  { path: "printingGroup", select: "name" },
   { path: "deityMapping", select: "name" },
   { path: "categoryDetails.category", select: "name color" },
   { path: "categoryDetails.subCategory", select: "name color" },
