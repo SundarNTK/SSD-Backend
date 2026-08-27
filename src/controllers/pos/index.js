@@ -14,6 +14,7 @@
  *
  *   GET  /customers/search?query=          — quick customer lookup
  *   GET  /customers/lookup?mobileNumber=   — exact match on an unregistered walk-in, for Create Customer auto-fill
+ *   GET  /customers/self                   — find-or-create the logged-in staff member's own customer profile
  *   POST /customers                        — create a walk-in devotee profile (isRegistered: false)
  *   GET  /customers/:id/recent-bookings    — last N confirmed bookings, for "repeat a past booking"
  *   GET  /items?search=&category=&subCategory=    — POS item picker
@@ -42,6 +43,7 @@ const { nextSequence } = require("../../common/utils/sequence");
 const escapeRegex = require("../../common/utils/escape-regex");
 const env = require("../../config/env");
 const createCustomerProfile = require("../../utilities/helpers/create-customer-profile");
+const ensureCustomerProfileForUser = require("../../utilities/helpers/ensure-customer-profile-for-user");
 
 const Item = require("../../models/items");
 const Service = require("../../models/services");
@@ -167,6 +169,32 @@ async function searchCustomers(req, res) {
     return responseHandler({ res, response: { items: customers } });
   } catch (error) {
     return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 400 : undefined });
+  }
+}
+
+/**
+ * GET /pos/booking/customers/self
+ * Find-or-create the Customer profile linked to the logged-in staff user
+ * (via Customer.linkedUserId, same idempotent helper used at registration
+ * and admin user create/update) — lets a booking go through under the
+ * staff member's own name when nobody at the counter picked or created a
+ * separate customer for it.
+ */
+async function getSelfCustomer(req, res) {
+  try {
+    const customer = await ensureCustomerProfileForUser(req.auth.user, req.auth.entityId);
+    return responseHandler({
+      res,
+      response: {
+        _id: customer._id,
+        customerCode: customer.customerCode,
+        name: customer.name,
+        email: customer.email,
+        mobileNumber: customer.mobileNumber,
+      },
+    });
+  } catch (error) {
+    return exceptionHandler({ res, error });
   }
 }
 
@@ -1335,6 +1363,7 @@ function registerBookingRoutes(r) {
   // ── Lookup / catalogue (read) ──────────────────────────────────────────
   r.get("/customers/search",    requirePermission("admin-booking", "view"),       searchCustomers);
   r.get("/customers/lookup",    requirePermission("admin-booking", "view"),       lookupCustomerByMobile);
+  r.get("/customers/self",      requirePermission("admin-booking", "view"),       getSelfCustomer);
   r.post("/customers",          requirePermission("admin-booking", "fullAccess"), validateBody(createCustomerSchema), createWalkInCustomer);
   r.get("/customers/:id/recent-bookings", requirePermission("admin-booking", "view"), getRecentBookings);
   r.get("/items",               requirePermission("admin-booking", "view"),       listPosItems);
