@@ -722,14 +722,16 @@ async function bookingSummary(req, res) {
         // Service — price from categoryDetails
         const svc = await Service.findOne(
           Service.notDeletedFilter({ _id: refId, status: 1, isPosAvailable: true })
-        ).populate("categoryDetails.category");
+        )
+          .populate("categoryDetails.category")
+          .populate("generalLedger", "gstType");
         if (!svc) throw `Service not found or not available at POS.`;
 
         name = svc.name;
         code = svc.code;
         // Use the first category price as default (admin can override in future)
         unitPrice = svc.categoryDetails[0]?.salePrice ?? 0;
-        gstRate = 0; // Services typically exempt; can extend later
+        gstRate = await resolveGstRate(svc.generalLedger?._id);
       }
 
       // Check availability (read-only — no reservation written here)
@@ -740,7 +742,10 @@ async function bookingSummary(req, res) {
       // the raw `quantity` the client sent — see effectiveQuantity().
       const qty = effectiveQuantity(line);
       const lineTotal = unitPrice * qty;
-      const lineGst = +(lineTotal * (gstRate / 100)).toFixed(2);
+      // Prices are GST-inclusive — lineTotal already has GST baked in, so
+      // this extracts the GST portion for the receipt/records rather than
+      // adding it on top (that would double-charge the devotee).
+      const lineGst = +(lineTotal - lineTotal / (1 + gstRate / 100)).toFixed(2);
 
       subtotal += lineTotal;
       totalGst += lineGst;
@@ -771,7 +776,10 @@ async function bookingSummary(req, res) {
       });
     }
 
-    const grandTotal = +(subtotal + totalGst).toFixed(2);
+    // GST-inclusive: the total charged is just the sum of the (already
+    // GST-inclusive) line prices — gstAmount is the portion of that total
+    // that's GST, not an extra amount added on top of it.
+    const grandTotal = +subtotal.toFixed(2);
 
     return responseHandler({
       res,
@@ -930,24 +938,26 @@ async function createOrder(req, res) {
 
     for (const line of lines) {
       const { refType, refId, quantity, deities, devotees } = line;
-      let name, code, unitPrice;
+      let name, code, unitPrice, gstRate;
 
       if (refType === "Item") {
         const item = await Item.findOne(
           Item.notDeletedFilter({ _id: refId, status: 1, posAvailability: true })
-        );
+        ).populate("generalLedger", "gstType");
         if (!item) throw `An item in the cart is no longer available.`;
         name = item.name;
         code = item.code;
         unitPrice = item.salePrice;
+        gstRate = await resolveGstRate(item.generalLedger?._id);
       } else {
         const svc = await Service.findOne(
           Service.notDeletedFilter({ _id: refId, status: 1, isPosAvailable: true })
-        );
+        ).populate("generalLedger", "gstType");
         if (!svc) throw `A service in the cart is no longer available.`;
         name = svc.name;
         code = svc.code;
         unitPrice = svc.categoryDetails[0]?.salePrice ?? 0;
+        gstRate = await resolveGstRate(svc.generalLedger?._id);
       }
 
       // Deity-mapped lines price (and later reserve/consume stock) per
@@ -956,12 +966,17 @@ async function createOrder(req, res) {
       // reservation and stock-out steps below without touching them.
       const qty = effectiveQuantity(line);
       const lineTotal = unitPrice * qty;
+      // Prices are GST-inclusive — extract the GST portion for the record
+      // rather than adding it on top of what's charged (see bookingSummary).
+      const lineGst = +(lineTotal - lineTotal / (1 + gstRate / 100)).toFixed(2);
       subtotal += lineTotal;
+      totalGst += lineGst;
 
       resolvedLines.push({ refType, refId, quantity: qty, name, code, unitPrice, lineTotal, deities, devotees });
     }
 
-    const grandTotal = +(subtotal + totalGst).toFixed(2);
+    // GST-inclusive: nothing is added on top of the line prices.
+    const grandTotal = +subtotal.toFixed(2);
     const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
     const orderNumber = await generateOrderNumber();
 

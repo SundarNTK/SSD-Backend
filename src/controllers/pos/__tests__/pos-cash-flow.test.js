@@ -98,8 +98,8 @@ describe("createOrder (Cash flow)", () => {
 
     Customer.findOne = jest.fn(() => mockQuery(validCustomer));
     PaymentMode.findOne = jest.fn(() => mockQuery(validPaymentMode));
-    Service.findOne = jest.fn(async () => validService);
-    Item.findOne = jest.fn(async () => null);
+    Service.findOne = jest.fn(() => mockQuery(validService));
+    Item.findOne = jest.fn(() => mockQuery(null));
     Order.create = jest.fn(async (doc) => ({ _id: ORDER_ID, ...doc }));
     Order.findByIdAndUpdate = jest.fn(async () => {});
 
@@ -176,7 +176,7 @@ describe("createOrder (Cash flow)", () => {
   });
 
   it("rejects when a line's item/service is no longer available", async () => {
-    Service.findOne = jest.fn(async () => null);
+    Service.findOne = jest.fn(() => mockQuery(null));
     const req = { body: baseOrderBody(), auth: {} };
     const res = mockRes();
 
