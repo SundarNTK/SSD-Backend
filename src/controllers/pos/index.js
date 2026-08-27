@@ -922,11 +922,18 @@ async function recheckLines(req, res) {
  *    If ANY line fails the availability check, ALL previously-placed
  *    reservations for this order are immediately rolled back.
  * 3. Write the Order document (status: "pending").
- * 4. Return the order with a 30-minute hold expiry timestamp.
- *
- * For Cash payment the frontend immediately calls /confirm after receiving
- * the order — the 30-minute window is never visible to the user in that
- * case, but the hold still exists for consistency.
+ * 4. Decide confirmation server-side, from the resolved payment mode — never
+ *    from anything the client asserts. Cash is confirmed immediately, in
+ *    this same request, via writeBookingFromOrder() (the same write
+ *    confirmOrder() runs) — a cashier collecting cash in person IS the
+ *    confirmation, so there's nothing for a second client-triggered call to
+ *    add except another opportunity to fake success. Any other payment mode
+ *    stays "pending" with its 30-minute hold; a future online gateway would
+ *    confirm it server-to-server (via its own webhook calling confirmOrder),
+ *    never via the browser. Either way the response carries a `status`
+ *    field ("confirmed" | "pending") and the frontend polls
+ *    GET /orders/:id/status until it reads "confirmed" rather than deciding
+ *    that for itself.
  */
 async function createOrder(req, res) {
   try {
@@ -1034,6 +1041,22 @@ async function createOrder(req, res) {
       throw reservationError;
     }
 
+    // ── 4. Cash confirms itself, right here, server-side ────────────────────
+    if (paymentMode.name.trim().toLowerCase() === "cash") {
+      // `order` came straight out of Order.create() a moment ago, so it's
+      // already got everything writeBookingFromOrder() reads (subtotal,
+      // grandTotal, paymentMode, portal, ...) — customer is the one field
+      // that's still just an id on this doc, so swap in the full record
+      // already fetched above.
+      const confirmed = await writeBookingFromOrder({ ...order.toObject?.() ?? order, customer });
+      return responseHandler({
+        res,
+        response: { ...confirmed, status: "confirmed" },
+        successMessage: "Booking confirmed successfully.",
+        statusCode: 201,
+      });
+    }
+
     return responseHandler({
       res,
       response: {
@@ -1053,6 +1076,7 @@ async function createOrder(req, res) {
         paymentModeName: order.paymentModeName,
         orderStatus: order.orderStatus,
         expiresAt: order.expiresAt,
+        status: "pending",
       },
       successMessage: "Order created. Inventory held for 30 minutes.",
       statusCode: 201,
@@ -1065,25 +1089,122 @@ async function createOrder(req, res) {
 // ─── confirm order → booking ──────────────────────────────────────────────────
 
 /**
+ * Writes the Booking (permanent confirmed record), then the Transaction
+ * (payment/receipt record), then marks the Order confirmed — plain
+ * sequential writes, not a MongoDB multi-document transaction. A
+ * transaction was tried here first for atomicity, but it measurably added
+ * latency (its own start/commit round trips on top of an already slow
+ * shared Atlas cluster — this was the actual cause of "Confirm Booking"
+ * stalling in the browser). For this system's scale, a crash landing
+ * exactly between these three writes is rare enough that a best-effort
+ * cleanup (delete whatever landed, then re-throw so the order stays
+ * retryable) is the better trade than paying transaction overhead on every
+ * single booking. Finishes by calling consumeReservations() — permanently
+ * decrementing currentStock on each inventory-applicable ref and writing
+ * InventoryAdjustment "Stock Out" rows.
+ *
+ * Shared by confirmOrder() (the standalone endpoint — an idempotent
+ * re-confirm, or a future payment gateway's webhook) and createOrder()'s
+ * Cash branch (confirmed in the same request the order is created in).
+ * `order` must carry `_id`, `orderNumber`, `customer` (populated doc or
+ * plain id), `lines`, `subtotal`, `gstAmount`, `grandTotal`, `paymentMode`,
+ * `paymentModeName`, `portal`, `bookedBy`, `entity` — exactly the shape
+ * both callers already have on hand, whether from a freshly created Order
+ * doc or one just fetched back out of the database.
+ */
+async function writeBookingFromOrder(order) {
+  const [bookingNumber, receiptNo] = await Promise.all([generateBookingNumber(), generateReceiptNumber()]);
+  const now = new Date();
+  const customerId = order.customer._id ?? order.customer;
+
+  let booking;
+  let transaction;
+  try {
+    // ── 1. Write Booking (permanent record) ──────────────────────────────
+    booking = await Booking.create({
+      bookingNumber,
+      orderId: order._id,
+      customer: customerId,
+      lines: order.lines,
+      subtotal: order.subtotal,
+      gstAmount: order.gstAmount,
+      grandTotal: order.grandTotal,
+      paymentMode: order.paymentMode,
+      paymentModeName: order.paymentModeName,
+      paymentStatus: "paid",
+      bookingStatus: "confirmed",
+      portal: order.portal,
+      bookedBy: order.bookedBy,
+      entity: order.entity,
+      bookedAt: now,
+      createdBy: order.bookedBy ?? null,
+    });
+
+    // ── 2. Write Transaction (payment/receipt record) ─────────────────────
+    transaction = await Transaction.create({
+      receiptNo,
+      bookingId: booking._id,
+      orderId: order._id,
+      customer: customerId,
+      paymentMode: order.paymentMode,
+      paymentModeName: order.paymentModeName,
+      amount: order.grandTotal,
+      paymentStatus: "paid",
+      portal: order.portal,
+      transactionDate: now,
+      processedBy: order.bookedBy,
+      createdBy: order.bookedBy ?? null,
+    });
+
+    // ── 3. Update Order ─────────────────────────────────────────────────
+    await Order.findByIdAndUpdate(order._id, { orderStatus: "confirmed", bookingId: booking._id });
+  } catch (writeError) {
+    // Best-effort cleanup so a retry doesn't leave orphaned rows or try to
+    // confirm again against a half-written state — order stays "pending"
+    // (never touched above), so the client can safely retry the same order.
+    if (transaction) await Transaction.deleteOne({ _id: transaction._id }).catch(() => {});
+    if (booking) await Booking.deleteOne({ _id: booking._id }).catch(() => {});
+    throw writeError;
+  }
+
+  // ── 4. Permanently decrement stock + consume reservations ────────────────
+  await consumeReservations(order._id, order.lines, order.bookedBy, bookingNumber);
+
+  const customerSnap = order.customer?.customerCode
+    ? order.customer
+    : await Customer.findById(order.customer).select("customerCode name email mobileNumber");
+
+  return {
+    _id: booking._id,
+    bookingNumber: booking.bookingNumber,
+    orderNumber: order.orderNumber,
+    receiptNo: transaction.receiptNo,
+    customer: {
+      _id: customerSnap._id,
+      customerCode: customerSnap.customerCode,
+      name: customerSnap.name,
+      email: customerSnap.email,
+      mobileNumber: customerSnap.mobileNumber,
+    },
+    lines: booking.lines,
+    subtotal: booking.subtotal,
+    gstAmount: booking.gstAmount,
+    grandTotal: booking.grandTotal,
+    paymentModeName: booking.paymentModeName,
+    paymentStatus: booking.paymentStatus,
+    bookingStatus: booking.bookingStatus,
+    bookedAt: booking.bookedAt,
+  };
+}
+
+/**
  * POST /pos/booking/orders/:id/confirm
  *
- * 1. Verify the order is still pending and not expired.
- * 2. Write the Booking (permanent confirmed record), then the Transaction
- *    (payment/receipt record), then mark the Order confirmed — plain
- *    sequential writes, not a MongoDB multi-document transaction. A
- *    transaction was tried here first for atomicity, but it measurably
- *    added latency (its own start/commit round trips on top of an already
- *    slow shared Atlas cluster — this was the actual cause of "Confirm
- *    Booking" stalling in the browser). For this system's scale, a crash
- *    landing exactly between these three writes is rare enough that a
- *    best-effort cleanup (delete whatever landed, then re-throw so the
- *    order stays retryable) is the better trade than paying transaction
- *    overhead on every single booking.
- * 3. consumeReservations() — permanently decrement currentStock on each
- *    inventory-applicable ref and write InventoryAdjustment "Stock Out" rows.
- *
- * For Cash, the frontend calls this immediately after createOrder succeeds.
- * For other payment modes (future), the payment gateway callback calls it.
+ * Verifies the order is still pending and not expired, then hands off to
+ * writeBookingFromOrder(). No longer the routine "Cash" path the frontend
+ * calls on every checkout (see createOrder) — this stays as the idempotent
+ * re-confirm (returns the existing booking if already confirmed) and as
+ * the landing spot a future online-payment gateway's webhook would call.
  */
 async function confirmOrder(req, res) {
   try {
@@ -1118,6 +1239,7 @@ async function confirmOrder(req, res) {
           ...existing.toObject(),
           receiptNo: existingTxn?.receiptNo ?? null,
           orderNumber: order.orderNumber,
+          status: "confirmed",
         },
         successMessage: "Booking already confirmed.",
       });
@@ -1131,98 +1253,63 @@ async function confirmOrder(req, res) {
       throw "Order expired — the 30-minute hold has lapsed. Please create a new order.";
     }
 
-    const [bookingNumber, receiptNo] = await Promise.all([generateBookingNumber(), generateReceiptNumber()]);
-    const now = new Date();
-    const customerId = order.customer._id ?? order.customer;
-
-    let booking;
-    let transaction;
-    try {
-      // ── 1. Write Booking (permanent record) ──────────────────────────────
-      booking = await Booking.create({
-        bookingNumber,
-        orderId: order._id,
-        customer: customerId,
-        lines: order.lines,
-        subtotal: order.subtotal,
-        gstAmount: order.gstAmount,
-        grandTotal: order.grandTotal,
-        paymentMode: order.paymentMode,
-        paymentModeName: order.paymentModeName,
-        paymentStatus: "paid",
-        bookingStatus: "confirmed",
-        portal: order.portal,
-        bookedBy: order.bookedBy,
-        entity: order.entity,
-        bookedAt: now,
-        createdBy: order.bookedBy ?? null,
-      });
-
-      // ── 2. Write Transaction (payment/receipt record) ─────────────────────
-      transaction = await Transaction.create({
-        receiptNo,
-        bookingId: booking._id,
-        orderId: order._id,
-        customer: customerId,
-        paymentMode: order.paymentMode,
-        paymentModeName: order.paymentModeName,
-        amount: order.grandTotal,
-        paymentStatus: "paid",
-        portal: order.portal,
-        transactionDate: now,
-        processedBy: order.bookedBy,
-        createdBy: order.bookedBy ?? null,
-      });
-
-      // ── 3. Update Order ─────────────────────────────────────────────────
-      await Order.findByIdAndUpdate(order._id, { orderStatus: "confirmed", bookingId: booking._id });
-    } catch (writeError) {
-      // Best-effort cleanup so a retry doesn't leave orphaned rows or try to
-      // confirm again against a half-written state — order stays "pending"
-      // (never touched above), so the client can safely retry the same order.
-      if (transaction) await Transaction.deleteOne({ _id: transaction._id }).catch(() => {});
-      if (booking) await Booking.deleteOne({ _id: booking._id }).catch(() => {});
-      throw writeError;
-    }
-
-    // ── 4. Permanently decrement stock + consume reservations ────────────────
-    await consumeReservations(
-      order._id,
-      order.lines,
-      order.bookedBy,
-      bookingNumber
-    );
-
-    const customerSnap = order.customer?.customerCode
-      ? order.customer
-      : await Customer.findById(order.customer).select("customerCode name email mobileNumber");
-
+    const confirmed = await writeBookingFromOrder(order);
     return responseHandler({
       res,
-      response: {
-        _id: booking._id,
-        bookingNumber: booking.bookingNumber,
-        orderNumber: order.orderNumber,
-        receiptNo: transaction.receiptNo,
-        customer: {
-          _id: customerSnap._id,
-          customerCode: customerSnap.customerCode,
-          name: customerSnap.name,
-          email: customerSnap.email,
-          mobileNumber: customerSnap.mobileNumber,
-        },
-        lines: booking.lines,
-        subtotal: booking.subtotal,
-        gstAmount: booking.gstAmount,
-        grandTotal: booking.grandTotal,
-        paymentModeName: booking.paymentModeName,
-        paymentStatus: booking.paymentStatus,
-        bookingStatus: booking.bookingStatus,
-        bookedAt: booking.bookedAt,
-      },
+      response: { ...confirmed, status: "confirmed" },
       successMessage: "Booking confirmed successfully.",
       statusCode: 201,
     });
+  } catch (error) {
+    return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 400 : undefined });
+  }
+}
+
+/**
+ * GET /pos/booking/orders/:id/status
+ *
+ * Read-only poll target. The frontend never decides "payment succeeded"
+ * itself any more (see createOrder/confirmOrder) — it creates the order
+ * and then watches this until the status the server already settled on
+ * shows up confirmed. Purely a read: never mutates anything, not even past
+ * expiry — an actual pending → confirmed/cancelled transition only ever
+ * happens inside createOrder's cash branch or confirmOrder itself.
+ */
+async function getOrderStatus(req, res) {
+  try {
+    const orderId = req.params.id;
+    if (!mongoose.isValidObjectId(orderId)) throw "Invalid order ID.";
+
+    const order = await Order.findOne(Order.notDeletedFilter({ _id: orderId })).select(
+      "orderStatus orderNumber expiresAt bookingId"
+    );
+    if (!order) throw "Order not found.";
+
+    if (order.orderStatus === "confirmed") {
+      const [booking, txn] = await Promise.all([
+        Booking.findById(order.bookingId)
+          .populate("customer", "customerCode name email mobileNumber")
+          .populate("lines.deities", "name")
+          .populate("bookedBy", "name email"),
+        Transaction.findOne({ orderId: order._id }),
+      ]);
+      if (!booking) throw "Booking record not found for this confirmed order.";
+      return responseHandler({
+        res,
+        // Flat, same shape as createOrder/confirmOrder's own "confirmed"
+        // response — one BookingConfirmation-shaped object everywhere a
+        // confirmed booking comes back from, regardless of which of the
+        // three endpoints is the one that discovered it.
+        response: { ...booking.toObject(), receiptNo: txn?.receiptNo ?? null, orderNumber: order.orderNumber, status: "confirmed" },
+      });
+    }
+
+    if (order.orderStatus === "cancelled") {
+      return responseHandler({ res, response: { status: "cancelled" } });
+    }
+
+    const expired = new Date() > order.expiresAt;
+    return responseHandler({ res, response: { status: expired ? "expired" : "pending", expiresAt: order.expiresAt } });
   } catch (error) {
     return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 400 : undefined });
   }
@@ -1406,6 +1493,7 @@ function registerBookingRoutes(r) {
   r.post("/recheck-lines",      requirePermission("admin-booking", "view"),       validateBody(recheckLinesSchema), recheckLines);
   r.post("/orders",             requirePermission("admin-booking", "fullAccess"), validateBody(createOrderSchema),  createOrder);
   r.post("/orders/:id/confirm", requirePermission("admin-booking", "fullAccess"),                                   confirmOrder);
+  r.get("/orders/:id/status",   requirePermission("admin-booking", "view"),                                         getOrderStatus);
 
   // ── Transaction ledger (read) ──────────────────────────────────────────
   r.get("/bookings",            requirePermission("pos-transactions", "view"),    listBookings);
@@ -1437,4 +1525,5 @@ module.exports = router;
 // change how routes/index.js consumes the default export.
 module.exports.createOrder = createOrder;
 module.exports.confirmOrder = confirmOrder;
+module.exports.getOrderStatus = getOrderStatus;
 module.exports.effectiveQuantity = effectiveQuantity;
