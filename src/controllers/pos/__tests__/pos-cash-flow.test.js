@@ -68,7 +68,7 @@ const validService = {
   _id: SERVICE_ID,
   name: "Special Darshan",
   code: "SV-016",
-  categoryDetails: [{ salePrice: 175 }],
+  salePrice: 175,
 };
 
 function baseOrderBody(overrides = {}) {

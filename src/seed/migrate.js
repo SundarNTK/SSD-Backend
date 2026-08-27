@@ -11,6 +11,7 @@
  *   4. activation invitations that were issued with an expiry made permanent
  *   5. indexes resynced
  *   6. `portal` backfilled on Order/Booking rows that predate the field
+ *   7. Service.salePrice backfilled from each row's old per-category price
  */
 require("dotenv").config();
 const mongoose = require("mongoose");
@@ -114,6 +115,32 @@ async function backfillBookingPortal() {
   console.log(`  Booking: ${bookingResult.modifiedCount} row(s) backfilled to portal="admin"`);
 }
 
+/**
+ * Service.salePrice used to live per categoryDetails row (a service could
+ * be priced differently under each category/sub-category it was mapped
+ * to); it's now one service-level figure, matching how Item.salePrice
+ * already worked. The old per-row field is no longer part of the schema,
+ * so a row created before this change would otherwise read as salePrice: 0
+ * once the new code deploys — this backfills it from that row's first
+ * (and in practice, in this system's history, only ever used) price.
+ * Reads/writes the raw collection: Mongoose's current schema no longer
+ * declares categoryDetails[].salePrice, so a model-level find() wouldn't
+ * expose it even though it's still physically stored on old documents.
+ */
+async function backfillServiceSalePrice() {
+  const services = await mongoose.connection.db
+    .collection("services")
+    .find({ salePrice: { $exists: false } })
+    .toArray();
+
+  for (const svc of services) {
+    const price = svc.categoryDetails?.[0]?.salePrice ?? 0;
+    await mongoose.connection.db.collection("services").updateOne({ _id: svc._id }, { $set: { salePrice: price } });
+    console.log(`  ${svc.name ?? svc._id}: salePrice -> ${price}`);
+  }
+  if (!services.length) console.log("  (all services already have a top-level salePrice)");
+}
+
 async function run() {
   await connectDatabase();
 
@@ -147,6 +174,9 @@ async function run() {
 
   console.log("\n>>> 6. Backfilling portal on Order/Booking");
   await backfillBookingPortal();
+
+  console.log("\n>>> 7. Backfilling Service.salePrice");
+  await backfillServiceSalePrice();
 
   console.log("\n>>> Migration complete.\n");
   process.exit(0);

@@ -2,10 +2,12 @@ const mongoose = require("mongoose");
 const { auditablePlugin, activeUniqueIndexOptions } = require("../../common/plugins/auditable");
 
 /**
- * One (category, subCategory) pairing per row, each with its own sale price
- * and display order — a service can be sold under several category/
- * sub-category combinations at once, at different prices (e.g. a pooja
- * listed under both "Daily Pooja" and "Festival Special" at different rates).
+ * One (category, subCategory) pairing per row, with its own display order —
+ * a service can be sold under several category/sub-category combinations
+ * at once (e.g. a pooja listed under both "Daily Pooja" and "Festival
+ * Special"). Price is a single service-level figure (see Service.salePrice
+ * below), not per pairing — a service costs the same no matter which
+ * category/sub-category it's found under, the same way Item.salePrice works.
  *
  * subCategory is optional: a row can map a service to a Category alone,
  * with no specific SubCategory. The POS Portal has nowhere to file that
@@ -16,7 +18,6 @@ const categoryDetailSchema = new mongoose.Schema(
   {
     category: { type: mongoose.Schema.Types.ObjectId, ref: "Category", required: true },
     subCategory: { type: mongoose.Schema.Types.ObjectId, ref: "SubCategory" },
-    salePrice: { type: Number, required: true, min: 0, default: 0 },
     displayOrder: { type: Number, default: 1 },
   },
   { _id: false }
@@ -34,6 +35,7 @@ const serviceSchema = new mongoose.Schema({
   categoryDetails: { type: [categoryDetailSchema], default: [] },
 
   generalLedger: { type: mongoose.Schema.Types.ObjectId, ref: "GeneralLedger", required: true },
+  salePrice: { type: Number, required: true, min: 0, default: 0 },
 
   isFamilyMembersRequired: { type: Boolean, default: false },
   maxFamilyMembers: { type: Number, default: 2 },

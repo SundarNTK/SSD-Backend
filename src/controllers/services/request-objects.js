@@ -4,10 +4,11 @@ const objectId = Joi.string().hex().length(24);
 
 // subCategory is optional — a row can map a service to a Category alone,
 // with no specific SubCategory (see models/services categoryDetailSchema).
+// Price lives on the Service itself (see createSchema/updateSchema below),
+// not per row — a service costs the same under every category it's in.
 const categoryDetailEntry = Joi.object({
   category: objectId.required(),
   subCategory: objectId.allow(null),
-  salePrice: Joi.number().min(0).default(0),
   displayOrder: Joi.number().integer().min(0).default(1),
 });
 
@@ -48,6 +49,7 @@ const createSchema = Joi.object({
   categoryDetails: Joi.array().items(categoryDetailEntry).default([]),
 
   generalLedger: objectId.required(),
+  salePrice: Joi.number().min(0).required(),
 
   isFamilyMembersRequired: Joi.boolean().default(false),
   maxFamilyMembers: Joi.number().integer().min(1).default(2),
@@ -76,6 +78,7 @@ const updateSchema = Joi.object({
   categoryDetails: Joi.array().items(categoryDetailEntry),
 
   generalLedger: objectId,
+  salePrice: Joi.number().min(0),
 
   isFamilyMembersRequired: Joi.boolean(),
   maxFamilyMembers: Joi.number().integer().min(1),
