@@ -377,7 +377,7 @@ async function listPosServices(req, res) {
         .populate("categoryDetails.category", "name color")
         .populate("categoryDetails.subCategory", "name")
         .populate("deityMapping", "name")
-        .select("name tamilName code categoryDetails isInventoryRequired currentStock thresholdCount isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers sessionRequired")
+        .select("name tamilName code salePrice categoryDetails isInventoryRequired currentStock thresholdCount isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers sessionRequired")
         .sort({ name: 1 })
         .skip((page - 1) * pageSize)
         .limit(pageSize),
@@ -424,15 +424,12 @@ async function decorateServices(services) {
   return Promise.all(
     services.map(async (svc) => {
       const avail = await getAvailability("Service", svc._id);
-      // salePrice lives in categoryDetails — expose the first one as a
-      // default (admin can override per-line pricing in a future pass).
-      const firstCatPrice = svc.categoryDetails[0]?.salePrice ?? 0;
       return {
         _id: svc._id,
         code: svc.code,
         name: svc.name,
         tamilName: svc.tamilName,
-        defaultSalePrice: firstCatPrice,
+        defaultSalePrice: svc.salePrice ?? 0,
         categoryDetails: svc.categoryDetails,
         isDeityMappingRequired: svc.isDeityMappingRequired,
         deityMapping: svc.deityMapping,
@@ -608,7 +605,7 @@ async function getCatalogue(req, res) {
             await Service.find({ _id: { $in: allUncategorizedServiceIds } })
               .populate("deityMapping", "name")
               .select(
-                "name tamilName code categoryDetails isInventoryRequired currentStock thresholdCount isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers sessionRequired"
+                "name tamilName code salePrice categoryDetails isInventoryRequired currentStock thresholdCount isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers sessionRequired"
               )
           )
         : [],
@@ -719,18 +716,14 @@ async function bookingSummary(req, res) {
         unitPrice = item.salePrice;
         gstRate = await resolveGstRate(item.generalLedger?._id);
       } else {
-        // Service — price from categoryDetails
         const svc = await Service.findOne(
           Service.notDeletedFilter({ _id: refId, status: 1, isPosAvailable: true })
-        )
-          .populate("categoryDetails.category")
-          .populate("generalLedger", "gstType");
+        ).populate("generalLedger", "gstType");
         if (!svc) throw `Service not found or not available at POS.`;
 
         name = svc.name;
         code = svc.code;
-        // Use the first category price as default (admin can override in future)
-        unitPrice = svc.categoryDetails[0]?.salePrice ?? 0;
+        unitPrice = svc.salePrice ?? 0;
         gstRate = await resolveGstRate(svc.generalLedger?._id);
       }
 
@@ -854,7 +847,7 @@ async function recheckLines(req, res) {
           if (!svc) return { ...base, available: false, reason: "No longer available for sale." };
           name = svc.name;
           code = svc.code;
-          unitPrice = svc.categoryDetails[0]?.salePrice ?? 0;
+          unitPrice = svc.salePrice ?? 0;
           offeringMeta = {
             tamilName: svc.tamilName,
             isDeityMappingRequired: svc.isDeityMappingRequired,
@@ -956,7 +949,7 @@ async function createOrder(req, res) {
         if (!svc) throw `A service in the cart is no longer available.`;
         name = svc.name;
         code = svc.code;
-        unitPrice = svc.categoryDetails[0]?.salePrice ?? 0;
+        unitPrice = svc.salePrice ?? 0;
         gstRate = await resolveGstRate(svc.generalLedger?._id);
       }
 
