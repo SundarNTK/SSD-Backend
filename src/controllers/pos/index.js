@@ -468,12 +468,17 @@ async function listPaymentModes(req, res) {
  *
  * Powers the POS Portal's folder browser. SubCategory carries no parent
  * Category reference at the master level (see models/sub-categories) — the
- * only place a (category, subCategory) pairing actually exists is on each
+ * only place a category/subCategory pairing actually exists is on each
  * Item/Service's own `categoryDetails` rows. So "folders" here are derived
  * by scanning the live catalogue rather than read off a fixed hierarchy:
- * every distinct (category, subCategory) pair present in an active,
- * POS-available Item or Service becomes one folder card, with its own
- * item/service counts.
+ * every distinct SubCategory present in an active, POS-available Item or
+ * Service becomes one folder card — keyed by subCategory alone, not by
+ * (category, subCategory), since the same sub-category can be reused
+ * across several categories (an Item under "Pooja Items / Daily" and a
+ * Service under "Archanai / Daily" land in the same "Daily" folder, not
+ * two duplicate ones). `categoryIds` on the folder lists every category
+ * its contents actually span, so the frontend can still decide whether a
+ * folder belongs in a given category's filtered view.
  *
  * subCategory is optional on a categoryDetails row (a master can be mapped
  * to a Category without a specific SubCategory, or carry no categoryDetails
@@ -504,7 +509,14 @@ async function getCatalogue(req, res) {
     const subCategoryById = new Map(subCategories.map((s) => [String(s._id), s]));
     const categoryById = new Map(categories.map((c) => [String(c._id), c]));
 
-    const folderMap = new Map(); // "categoryId::subCategoryId" -> folder accumulator
+    // Keyed by subCategoryId alone, not (categoryId, subCategoryId) — a
+    // Sub Category has no parent Category at the master level (see
+    // models/sub-categories), so the same sub-category name showing up
+    // under two different categories (e.g. an Item filed under "Pooja
+    // Items / Daily" and a Service filed under "Archanai / Daily") is one
+    // folder, not two duplicate "Daily" cards, with both an item and a
+    // service inside it.
+    const folderMap = new Map(); // subCategoryId -> folder accumulator
     const categoryItemIds = new Map(); // categoryId -> Set(itemId)
     const categoryServiceIds = new Map(); // categoryId -> Set(serviceId)
     const categoryOnlyItemIds = new Map(); // itemId -> categoryId (subCategory-less row)
@@ -536,20 +548,19 @@ async function getCatalogue(req, res) {
         return;
       }
 
-      const key = `${catId}::${subId}`;
-      if (!folderMap.has(key)) {
-        folderMap.set(key, {
-          categoryId: catId,
-          categoryName: categoryById.get(catId)?.name ?? "—",
+      if (!folderMap.has(subId)) {
+        folderMap.set(subId, {
+          categoryIds: new Set(),
           subCategoryId: subId,
           subCategoryName: subCategoryById.get(subId)?.name ?? "—",
           subCategoryTamilName: subCategoryById.get(subId)?.tamilName || null,
-          color: subCategoryById.get(subId)?.color ?? categoryById.get(catId)?.color ?? null,
+          color: subCategoryById.get(subId)?.color ?? null,
           itemIds: new Set(),
           serviceIds: new Set(),
         });
       }
-      const folder = folderMap.get(key);
+      const folder = folderMap.get(subId);
+      folder.categoryIds.add(catId);
       const bucket = kind === "Item" ? folder.itemIds : folder.serviceIds;
       bucket.add(String(docId));
     }
@@ -574,8 +585,7 @@ async function getCatalogue(req, res) {
 
     const folders = [...folderMap.values()]
       .map((f) => ({
-        categoryId: f.categoryId,
-        categoryName: f.categoryName,
+        categoryIds: [...f.categoryIds],
         subCategoryId: f.subCategoryId,
         subCategoryName: f.subCategoryName,
         subCategoryTamilName: f.subCategoryTamilName,
