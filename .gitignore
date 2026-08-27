@@ -2,3 +2,6 @@ node_modules/
 .env
 logs/
 dist/
+# One-off local backups (e.g. from src/seed/reseedCatalogue.js) — can
+# contain customer PII pulled from Order/Booking snapshots, never committed.
+backups/
