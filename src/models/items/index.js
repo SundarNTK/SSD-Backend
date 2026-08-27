@@ -5,11 +5,16 @@ const { auditablePlugin, activeUniqueIndexOptions } = require("../../common/plug
  * One (category, subCategory) pairing per row, with its own display order —
  * an item can sit under several category/sub-category combinations at
  * once (e.g. shown under both "Pooja Items" and "Festival Specials").
+ *
+ * subCategory is optional: a row can map an item to a Category alone, with
+ * no specific SubCategory. The POS Portal has nowhere to file that into as
+ * a folder, so it surfaces it directly in that category's listing instead
+ * (see controllers/pos getCatalogue).
  */
 const categoryDetailSchema = new mongoose.Schema(
   {
     category: { type: mongoose.Schema.Types.ObjectId, ref: "Category", required: true },
-    subCategory: { type: mongoose.Schema.Types.ObjectId, ref: "SubCategory", required: true },
+    subCategory: { type: mongoose.Schema.Types.ObjectId, ref: "SubCategory" },
     displayOrder: { type: Number, default: 0 },
   },
   { _id: false }

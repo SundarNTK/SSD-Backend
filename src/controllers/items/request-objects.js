@@ -3,9 +3,11 @@ const { UNITS_OF_MEASURE } = require("../../utilities/constants/units-of-measure
 
 const objectId = Joi.string().hex().length(24);
 
+// subCategory is optional — a row can map an item to a Category alone, with
+// no specific SubCategory (see models/items categoryDetailSchema).
 const categoryDetailEntry = Joi.object({
   category: objectId.required(),
-  subCategory: objectId.required(),
+  subCategory: objectId.allow(null),
   displayOrder: Joi.number().integer().min(0).default(0),
 });
 
