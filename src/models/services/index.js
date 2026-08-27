@@ -31,6 +31,7 @@ const serviceSchema = new mongoose.Schema({
 
   isDeityMappingRequired: { type: Boolean, default: false },
   deityMapping: { type: [{ type: mongoose.Schema.Types.ObjectId, ref: "Deity" }], default: [] },
+  printingGroup: { type: mongoose.Schema.Types.ObjectId, ref: "PrintingGroup", required: true },
 
   categoryDetails: { type: [categoryDetailSchema], default: [] },
 
@@ -64,6 +65,7 @@ serviceSchema.index({ status: 1, createdAt: -1 });
 // subdocuments, and future "services under this category" / "services for
 // this deity" screens will filter by exactly these.
 serviceSchema.index({ generalLedger: 1 });
+serviceSchema.index({ printingGroup: 1 });
 serviceSchema.index({ deityMapping: 1 });
 serviceSchema.index({ "categoryDetails.category": 1 });
 serviceSchema.index({ "categoryDetails.subCategory": 1 });
