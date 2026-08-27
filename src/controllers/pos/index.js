@@ -498,7 +498,9 @@ async function getCatalogue(req, res) {
         if (cd.subCategory) subCategoryIds.add(String(cd.subCategory));
       }
     }
-    const subCategories = await SubCategory.find({ _id: { $in: [...subCategoryIds] } }).select("name tamilName color");
+    const subCategories = await SubCategory.find(
+      SubCategory.notDeletedFilter({ status: 1, _id: { $in: [...subCategoryIds] } })
+    ).select("name tamilName color");
     const subCategoryById = new Map(subCategories.map((s) => [String(s._id), s]));
     const categoryById = new Map(categories.map((c) => [String(c._id), c]));
 
@@ -511,6 +513,11 @@ async function getCatalogue(req, res) {
     function addToFolder(cd, kind, docId) {
       const catId = String(cd.category);
 
+      // A row pointing at a category that's been deactivated or deleted
+      // has nowhere valid to be shown — skip it entirely rather than
+      // surfacing a "—" placeholder folder/category pill in POS.
+      if (!categoryById.has(catId)) return;
+
       // Counted against the category pill either way — a subCategory-less
       // mapping still belongs to this category, it just has no folder to
       // sit in below it.
@@ -518,13 +525,17 @@ async function getCatalogue(req, res) {
       if (!perCategory.has(catId)) perCategory.set(catId, new Set());
       perCategory.get(catId).add(String(docId));
 
-      if (!cd.subCategory) {
+      // Same idea for the sub-category: if it's been deactivated/deleted
+      // (or the row simply has none), there's no folder to file into, so
+      // this falls back to showing the item/service directly under its
+      // category instead of a "—" folder.
+      const subId = cd.subCategory ? String(cd.subCategory) : null;
+      if (!subId || !subCategoryById.has(subId)) {
         const map = kind === "Item" ? categoryOnlyItemIds : categoryOnlyServiceIds;
         if (!map.has(String(docId))) map.set(String(docId), catId);
         return;
       }
 
-      const subId = String(cd.subCategory);
       const key = `${catId}::${subId}`;
       if (!folderMap.has(key)) {
         folderMap.set(key, {
