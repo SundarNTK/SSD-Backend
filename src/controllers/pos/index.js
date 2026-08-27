@@ -448,9 +448,16 @@ async function listPaymentModes(req, res) {
  * by scanning the live catalogue rather than read off a fixed hierarchy:
  * every distinct (category, subCategory) pair present in an active,
  * POS-available Item or Service becomes one folder card, with its own
- * item/service counts. Anything with no categoryDetails at all (legal —
- * the field isn't required) has nowhere to file into, so it's returned
- * separately as "uncategorized" for the screen to show alongside the folders.
+ * item/service counts.
+ *
+ * subCategory is optional on a categoryDetails row (a master can be mapped
+ * to a Category without a specific SubCategory, or carry no categoryDetails
+ * at all). Either way there's no folder to file into, so both go out in the
+ * same "uncategorized" arrays, each item/service carrying its own
+ * `categoryId` — null for the fully-uncategorized case, the mapped
+ * category's id when only the subCategory is missing. The frontend uses
+ * that id to decide whether an entry belongs in the unfiltered "All
+ * Categories" view only, or also inside a specific category's filtered view.
  */
 async function getCatalogue(req, res) {
   try {
@@ -462,18 +469,36 @@ async function getCatalogue(req, res) {
 
     const subCategoryIds = new Set();
     for (const doc of [...items, ...services]) {
-      for (const cd of doc.categoryDetails || []) subCategoryIds.add(String(cd.subCategory));
+      for (const cd of doc.categoryDetails || []) {
+        if (cd.subCategory) subCategoryIds.add(String(cd.subCategory));
+      }
     }
-    const subCategories = await SubCategory.find({ _id: { $in: [...subCategoryIds] } }).select("name color");
+    const subCategories = await SubCategory.find({ _id: { $in: [...subCategoryIds] } }).select("name tamilName color");
     const subCategoryById = new Map(subCategories.map((s) => [String(s._id), s]));
     const categoryById = new Map(categories.map((c) => [String(c._id), c]));
 
     const folderMap = new Map(); // "categoryId::subCategoryId" -> folder accumulator
     const categoryItemIds = new Map(); // categoryId -> Set(itemId)
     const categoryServiceIds = new Map(); // categoryId -> Set(serviceId)
+    const categoryOnlyItemIds = new Map(); // itemId -> categoryId (subCategory-less row)
+    const categoryOnlyServiceIds = new Map(); // serviceId -> categoryId (subCategory-less row)
 
     function addToFolder(cd, kind, docId) {
       const catId = String(cd.category);
+
+      // Counted against the category pill either way — a subCategory-less
+      // mapping still belongs to this category, it just has no folder to
+      // sit in below it.
+      const perCategory = kind === "Item" ? categoryItemIds : categoryServiceIds;
+      if (!perCategory.has(catId)) perCategory.set(catId, new Set());
+      perCategory.get(catId).add(String(docId));
+
+      if (!cd.subCategory) {
+        const map = kind === "Item" ? categoryOnlyItemIds : categoryOnlyServiceIds;
+        if (!map.has(String(docId))) map.set(String(docId), catId);
+        return;
+      }
+
       const subId = String(cd.subCategory);
       const key = `${catId}::${subId}`;
       if (!folderMap.has(key)) {
@@ -482,6 +507,7 @@ async function getCatalogue(req, res) {
           categoryName: categoryById.get(catId)?.name ?? "—",
           subCategoryId: subId,
           subCategoryName: subCategoryById.get(subId)?.name ?? "—",
+          subCategoryTamilName: subCategoryById.get(subId)?.tamilName || null,
           color: subCategoryById.get(subId)?.color ?? categoryById.get(catId)?.color ?? null,
           itemIds: new Set(),
           serviceIds: new Set(),
@@ -490,10 +516,6 @@ async function getCatalogue(req, res) {
       const folder = folderMap.get(key);
       const bucket = kind === "Item" ? folder.itemIds : folder.serviceIds;
       bucket.add(String(docId));
-
-      const perCategory = kind === "Item" ? categoryItemIds : categoryServiceIds;
-      if (!perCategory.has(catId)) perCategory.set(catId, new Set());
-      perCategory.get(catId).add(String(docId));
     }
 
     const uncategorizedItemIds = [];
@@ -520,6 +542,7 @@ async function getCatalogue(req, res) {
         categoryName: f.categoryName,
         subCategoryId: f.subCategoryId,
         subCategoryName: f.subCategoryName,
+        subCategoryTamilName: f.subCategoryTamilName,
         color: f.color,
         itemCount: f.itemIds.size,
         serviceCount: f.serviceIds.size,
@@ -536,19 +559,25 @@ async function getCatalogue(req, res) {
       })
       .filter((c) => c.count > 0);
 
-    const [uncategorizedItems, uncategorizedServices] = await Promise.all([
-      uncategorizedItemIds.length
+    // Both the fully-uncategorized ids and the category-only ids are fetched
+    // and decorated together — the only difference the response needs to
+    // carry is which categoryId (if any) each one resolves to.
+    const allUncategorizedItemIds = [...new Set([...uncategorizedItemIds.map(String), ...categoryOnlyItemIds.keys()])];
+    const allUncategorizedServiceIds = [...new Set([...uncategorizedServiceIds.map(String), ...categoryOnlyServiceIds.keys()])];
+
+    const [uncategorizedItemsRaw, uncategorizedServicesRaw] = await Promise.all([
+      allUncategorizedItemIds.length
         ? decorateItems(
-            await Item.find({ _id: { $in: uncategorizedItemIds } })
+            await Item.find({ _id: { $in: allUncategorizedItemIds } })
               .populate("deityMapping", "name")
               .select(
                 "name tamilName code salePrice isInventoryApplicable currentStock threshold isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers minQuantity maxQuantity categoryDetails"
               )
           )
         : [],
-      uncategorizedServiceIds.length
+      allUncategorizedServiceIds.length
         ? decorateServices(
-            await Service.find({ _id: { $in: uncategorizedServiceIds } })
+            await Service.find({ _id: { $in: allUncategorizedServiceIds } })
               .populate("deityMapping", "name")
               .select(
                 "name tamilName code categoryDetails isInventoryRequired currentStock thresholdCount isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers sessionRequired"
@@ -556,6 +585,15 @@ async function getCatalogue(req, res) {
           )
         : [],
     ]);
+
+    const uncategorizedItems = uncategorizedItemsRaw.map((item) => ({
+      ...item,
+      categoryId: categoryOnlyItemIds.get(String(item._id)) ?? null,
+    }));
+    const uncategorizedServices = uncategorizedServicesRaw.map((svc) => ({
+      ...svc,
+      categoryId: categoryOnlyServiceIds.get(String(svc._id)) ?? null,
+    }));
 
     return responseHandler({
       res,
