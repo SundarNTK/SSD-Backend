@@ -742,10 +742,11 @@ async function bookingSummary(req, res) {
       // the raw `quantity` the client sent — see effectiveQuantity().
       const qty = effectiveQuantity(line);
       const lineTotal = unitPrice * qty;
-      // Prices are GST-inclusive — lineTotal already has GST baked in, so
-      // this extracts the GST portion for the receipt/records rather than
-      // adding it on top (that would double-charge the devotee).
-      const lineGst = +(lineTotal - lineTotal / (1 + gstRate / 100)).toFixed(2);
+      // Master prices (Item.salePrice / Service.categoryDetails.salePrice)
+      // are GST-exclusive — this is the amount GST adds on top, per the
+      // rate configured on the item/service's General Ledger's GST type.
+      // e.g. a $100 line at 8% GST adds $8, for a $108 total.
+      const lineGst = +(lineTotal * (gstRate / 100)).toFixed(2);
 
       subtotal += lineTotal;
       totalGst += lineGst;
@@ -776,10 +777,9 @@ async function bookingSummary(req, res) {
       });
     }
 
-    // GST-inclusive: the total charged is just the sum of the (already
-    // GST-inclusive) line prices — gstAmount is the portion of that total
-    // that's GST, not an extra amount added on top of it.
-    const grandTotal = +subtotal.toFixed(2);
+    // grandTotal is GST-inclusive: subtotal (GST-exclusive master prices)
+    // plus the GST just computed on top of it.
+    const grandTotal = +(subtotal + totalGst).toFixed(2);
 
     return responseHandler({
       res,
@@ -966,17 +966,16 @@ async function createOrder(req, res) {
       // reservation and stock-out steps below without touching them.
       const qty = effectiveQuantity(line);
       const lineTotal = unitPrice * qty;
-      // Prices are GST-inclusive — extract the GST portion for the record
-      // rather than adding it on top of what's charged (see bookingSummary).
-      const lineGst = +(lineTotal - lineTotal / (1 + gstRate / 100)).toFixed(2);
+      // Same GST-on-top math as bookingSummary — see the comment there.
+      const lineGst = +(lineTotal * (gstRate / 100)).toFixed(2);
       subtotal += lineTotal;
       totalGst += lineGst;
 
       resolvedLines.push({ refType, refId, quantity: qty, name, code, unitPrice, lineTotal, deities, devotees });
     }
 
-    // GST-inclusive: nothing is added on top of the line prices.
-    const grandTotal = +subtotal.toFixed(2);
+    // grandTotal is GST-inclusive: subtotal plus the GST computed on top.
+    const grandTotal = +(subtotal + totalGst).toFixed(2);
     const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
     const orderNumber = await generateOrderNumber();
 
