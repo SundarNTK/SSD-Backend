@@ -1,8 +1,13 @@
 /**
  * Unit tests for the Cash payment flow: createOrder (POST /pos/booking/orders)
- * followed immediately by confirmOrder (POST /pos/booking/orders/:id/confirm) —
- * exactly what the POS Portal's "Proceed to Payment" → Cash → "Confirm Booking"
- * button sequence does (see PosPortalPage.tsx's handleConfirmBooking).
+ * now decides confirmation itself from the resolved payment mode — Cash
+ * writes the Booking/Transaction and consumes reservations in the same
+ * request, never waiting on a second client-triggered call. confirmOrder
+ * (POST /pos/booking/orders/:id/confirm) and getOrderStatus
+ * (GET /pos/booking/orders/:id/status) are still exercised directly here
+ * too: confirmOrder as the idempotent re-confirm / future gateway-webhook
+ * target, getOrderStatus as the read-only endpoint the frontend polls
+ * after createOrder instead of asserting success itself.
  *
  * No real database — Mongoose models are stubbed directly (their static
  * methods are plain properties on a shared singleton object, so reassigning
@@ -25,7 +30,7 @@ const { Booking } = require("../../../models/bookings");
 const { Transaction } = require("../../../models/transactions");
 const { placeReservationsForOrder, consumeReservations, cancelReservations } = require("../inventory-reservation");
 const { nextSequence } = require("../../../common/utils/sequence");
-const { createOrder, confirmOrder, effectiveQuantity } = require("../index");
+const { createOrder, confirmOrder, getOrderStatus, effectiveQuantity } = require("../index");
 
 const RECEIPT_NO = "RCP-20260826-0001";
 
@@ -102,12 +107,17 @@ describe("createOrder (Cash flow)", () => {
     Item.findOne = jest.fn(() => mockQuery(null));
     Order.create = jest.fn(async (doc) => ({ _id: ORDER_ID, ...doc }));
     Order.findByIdAndUpdate = jest.fn(async () => {});
+    // Cash now confirms in the very same request — these back the
+    // writeBookingFromOrder() call createOrder makes once it sees "Cash".
+    Booking.create = jest.fn(async (doc) => ({ _id: BOOKING_ID, ...doc }));
+    Transaction.create = jest.fn(async (doc) => ({ _id: "999999999999999999999999", ...doc }));
 
     nextSequence.mockResolvedValue(1);
     placeReservationsForOrder.mockResolvedValue([]);
+    consumeReservations.mockResolvedValue(undefined);
   });
 
-  it("creates a pending order with the correct total and reserves inventory", async () => {
+  it("creates a Cash order and confirms it in the same request: writes the booking, consumes reservations, returns a confirmed booking", async () => {
     const req = { body: baseOrderBody(), auth: { userId: USER_ID, entityId: null } };
     const res = mockRes();
 
@@ -123,11 +133,37 @@ describe("createOrder (Cash flow)", () => {
       })
     );
     expect(placeReservationsForOrder).toHaveBeenCalledWith(expect.any(Array), ORDER_ID);
+    expect(Booking.create).toHaveBeenCalledWith(
+      expect.objectContaining({ orderId: ORDER_ID, paymentStatus: "paid", bookingStatus: "confirmed", grandTotal: 175 })
+    );
+    expect(Transaction.create).toHaveBeenCalledWith(
+      expect.objectContaining({ bookingId: BOOKING_ID, orderId: ORDER_ID, amount: 175, paymentStatus: "paid" })
+    );
+    expect(Order.findByIdAndUpdate).toHaveBeenCalledWith(ORDER_ID, { orderStatus: "confirmed", bookingId: BOOKING_ID });
+    expect(consumeReservations).toHaveBeenCalledWith(ORDER_ID, expect.any(Array), USER_ID, expect.any(String));
     expect(res.status).toHaveBeenCalledWith(201);
     expect(res.json).toHaveBeenCalledWith(
       expect.objectContaining({
         success: true,
-        data: expect.objectContaining({ orderNumber: expect.any(String), orderStatus: "pending", grandTotal: 175 }),
+        data: expect.objectContaining({ status: "confirmed", bookingStatus: "confirmed", grandTotal: 175, receiptNo: expect.any(String) }),
+      })
+    );
+  });
+
+  it("leaves a non-Cash order pending instead of confirming it, and never writes a booking", async () => {
+    PaymentMode.findOne = jest.fn(() => mockQuery({ _id: PAYMENT_MODE_ID, name: "PayNow" }));
+    const req = { body: baseOrderBody(), auth: { userId: USER_ID, entityId: null } };
+    const res = mockRes();
+
+    await createOrder(req, res);
+
+    expect(Booking.create).not.toHaveBeenCalled();
+    expect(consumeReservations).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        success: true,
+        data: expect.objectContaining({ orderNumber: expect.any(String), orderStatus: "pending", status: "pending", grandTotal: 175 }),
       })
     );
   });
@@ -333,5 +369,86 @@ describe("confirmOrder (Cash flow)", () => {
     expect(Order.findOne).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(400);
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ message: "Invalid order ID." }));
+  });
+});
+
+describe("getOrderStatus", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it("reports pending for an order still inside its 30-minute hold", async () => {
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
+    Order.findOne = jest.fn(() => mockQuery({ _id: ORDER_ID, orderStatus: "pending", expiresAt, bookingId: null }));
+    const req = { params: { id: ORDER_ID } };
+    const res = mockRes();
+
+    await getOrderStatus(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ success: true, data: expect.objectContaining({ status: "pending", expiresAt }) })
+    );
+  });
+
+  it("reports expired, without mutating anything, once the hold has lapsed", async () => {
+    Order.findOne = jest.fn(() => mockQuery({ _id: ORDER_ID, orderStatus: "pending", expiresAt: new Date(Date.now() - 1000), bookingId: null }));
+    const req = { params: { id: ORDER_ID } };
+    const res = mockRes();
+
+    await getOrderStatus(req, res);
+
+    expect(Order.findByIdAndUpdate).not.toHaveBeenCalled();
+    expect(cancelReservations).not.toHaveBeenCalled();
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: "expired" }) }));
+  });
+
+  it("reports cancelled for a cancelled order", async () => {
+    Order.findOne = jest.fn(() => mockQuery({ _id: ORDER_ID, orderStatus: "cancelled", bookingId: null }));
+    const req = { params: { id: ORDER_ID } };
+    const res = mockRes();
+
+    await getOrderStatus(req, res);
+
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ data: { status: "cancelled" } }));
+  });
+
+  it("returns the booking details once the order is confirmed", async () => {
+    const bookingData = { _id: BOOKING_ID, bookingNumber: "BKG202608260004", bookingStatus: "confirmed", grandTotal: 175 };
+    const booking = { ...bookingData, toObject: () => bookingData };
+    Order.findOne = jest.fn(() => mockQuery({ _id: ORDER_ID, orderNumber: "POS202608260009", orderStatus: "confirmed", bookingId: BOOKING_ID }));
+    Booking.findById = jest.fn(() => mockQuery(booking));
+    Transaction.findOne = jest.fn(() => mockQuery({ receiptNo: RECEIPT_NO }));
+    const req = { params: { id: ORDER_ID } };
+    const res = mockRes();
+
+    await getOrderStatus(req, res);
+
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ ...bookingData, receiptNo: RECEIPT_NO, orderNumber: "POS202608260009", status: "confirmed" }),
+      })
+    );
+  });
+
+  it("rejects a malformed order id without touching the database", async () => {
+    const req = { params: { id: "not-a-valid-id" } };
+    const res = mockRes();
+
+    await getOrderStatus(req, res);
+
+    expect(Order.findOne).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(400);
+  });
+
+  it("rejects when the order doesn't exist", async () => {
+    Order.findOne = jest.fn(() => mockQuery(null));
+    const req = { params: { id: ORDER_ID } };
+    const res = mockRes();
+
+    await getOrderStatus(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ message: "Order not found." }));
   });
 });
