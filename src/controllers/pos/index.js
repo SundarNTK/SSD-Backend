@@ -27,8 +27,22 @@
  *   POST /recheck-lines                    — re-validate past lines against the live catalogue
  *   POST /orders                           — create order + reserve inventory
  *   POST /orders/:id/confirm               — confirm order → Booking + Transaction + stock-out
- *   GET  /bookings?search=&status=&portal= — POS Transactions ledger
- *   GET  /bookings/:id                     — full booking + transaction detail
+ *   GET  /bookings?search=&status=&portal=&paymentStatus= — POS Transactions ledger
+ *   GET  /bookings/:id                     — full booking + payment history
+ *   POST /bookings/:id/payments            — collect another installment against
+ *                                             a partially-paid booking
+ *
+ * Partial payment: POST /orders and POST /orders/:id/confirm both take an
+ * optional `paidAmount` — omit it to pay in full (unchanged default
+ * behaviour), or send any amount from 0 up to the priced grandTotal to
+ * confirm the booking with only part of it collected. The booking itself is
+ * still written and inventory still committed either way; only its
+ * paymentStatus ("paid" | "partial" | "pending") and the Transaction amount
+ * differ. The remaining balance is then collected — once or over several
+ * more visits — via POST /bookings/:id/payments, which keeps appending
+ * Transaction rows against the same bookingId until amountPaid reaches
+ * grandTotal. See writeBookingFromOrder()'s and recordBookingPayment()'s own
+ * comments for the mechanics.
  *
  * Inventory reservation lifecycle: see inventory-reservation.js.
  */
@@ -38,6 +52,7 @@ const authGuard = require("../../common/middleware/auth-guard");
 const adminOnly = require("../../common/middleware/admin-only");
 const requirePermission = require("../../common/middleware/require-permission");
 const validateBody = require("../../common/middleware/validate");
+const { USER_TYPES } = require("../../utilities/constants/user-types");
 const { responseHandler, exceptionHandler } = require("../../utilities/handlers");
 const { nextSequence } = require("../../common/utils/sequence");
 const escapeRegex = require("../../common/utils/escape-regex");
@@ -72,6 +87,7 @@ const {
   customerSearchSchema,
   createCustomerSchema,
   recheckLinesSchema,
+  recordPaymentSchema,
 } = require("./request-objects");
 
 const mongoose = require("mongoose");
@@ -122,6 +138,31 @@ async function generateReceiptNumber() {
   const n = await nextSequence("receipt");
   const today = new Date().toISOString().slice(0, 10).replace(/-/g, "");
   return `RCP-${today}-${String(n).padStart(4, "0")}`;
+}
+
+/**
+ * A booking's amountPaid is never stored on the Booking itself — it's always
+ * the sum of its "paid" Transaction rows, so there's exactly one source of
+ * truth for how much has actually been collected (see models/transactions'
+ * own comment). Small change from floating-point cents drift is swallowed by
+ * rounding to 2dp everywhere this is used.
+ */
+function sumPaidAmount(transactions) {
+  return +transactions
+    .filter((t) => t.paymentStatus === "paid")
+    .reduce((sum, t) => sum + t.amount, 0)
+    .toFixed(2);
+}
+
+/**
+ * "paid" once amountPaid has reached grandTotal (a fraction of a cent short
+ * still counts, to absorb floating-point rounding), "partial" once something
+ * but not everything has been collected, "pending" if nothing has.
+ */
+function derivePaymentStatus(amountPaid, grandTotal) {
+  if (amountPaid >= grandTotal - 0.005) return "paid";
+  if (amountPaid > 0) return "partial";
+  return "pending";
 }
 
 /**
@@ -940,7 +981,7 @@ async function createOrder(req, res) {
     const { error, value } = createOrderSchema.validate(req.body);
     if (error) throw error.details[0].message;
 
-    const { customerId, lines, paymentModeId } = value;
+    const { customerId, lines, paymentModeId, paidAmount } = value;
 
     const customer = await Customer.findOne(
       Customer.notDeletedFilter({ _id: customerId, status: 1 })
@@ -997,6 +1038,11 @@ async function createOrder(req, res) {
 
     // grandTotal is GST-inclusive: subtotal plus the GST computed on top.
     const grandTotal = +(subtotal + totalGst).toFixed(2);
+    // Only checkable now that the cart has actually been priced server-side
+    // — the schema only knows paidAmount isn't negative.
+    if (paidAmount != null && paidAmount > grandTotal + 0.005) {
+      throw `Payment amount cannot exceed the total payable amount of ${grandTotal.toFixed(2)}.`;
+    }
     const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
     const orderNumber = await generateOrderNumber();
 
@@ -1048,11 +1094,12 @@ async function createOrder(req, res) {
       // grandTotal, paymentMode, portal, ...) — customer is the one field
       // that's still just an id on this doc, so swap in the full record
       // already fetched above.
-      const confirmed = await writeBookingFromOrder({ ...order.toObject?.() ?? order, customer });
+      const confirmed = await writeBookingFromOrder({ ...order.toObject?.() ?? order, customer }, paidAmount);
       return responseHandler({
         res,
         response: { ...confirmed, status: "confirmed" },
-        successMessage: "Booking confirmed successfully.",
+        successMessage:
+          confirmed.paymentStatus === "paid" ? "Booking confirmed successfully." : "Booking confirmed with a partial payment.",
         statusCode: 201,
       });
     }
@@ -1111,11 +1158,27 @@ async function createOrder(req, res) {
  * `paymentModeName`, `portal`, `bookedBy`, `entity` — exactly the shape
  * both callers already have on hand, whether from a freshly created Order
  * doc or one just fetched back out of the database.
+ *
+ * `paidAmount` is how much is being collected at confirm time — omit it (or
+ * pass undefined/null) to pay the full grandTotal, exactly as before. Pass
+ * anything from 0 up to grandTotal to open a partial payment: the booking is
+ * still confirmed (inventory is committed either way — see the module
+ * comment on Booking), but its paymentStatus reflects what's actually been
+ * collected, and the remainder can be collected later via
+ * POST /pos/booking/bookings/:id/payments (recordBookingPayment()).
  */
-async function writeBookingFromOrder(order) {
+async function writeBookingFromOrder(order, paidAmount) {
   const [bookingNumber, receiptNo] = await Promise.all([generateBookingNumber(), generateReceiptNumber()]);
   const now = new Date();
   const customerId = order.customer._id ?? order.customer;
+
+  // Clamp rather than reject — the amount was already validated by the
+  // caller against the price the client *quoted*; grandTotal here is the
+  // server's own just-recomputed figure, and the two can differ by a cent of
+  // rounding. Silently capping at grandTotal (and floor of 0) means that kind
+  // of drift never blocks a checkout the cashier already collected cash for.
+  const amountNow = paidAmount == null ? order.grandTotal : Math.max(0, Math.min(paidAmount, order.grandTotal));
+  const bookingPaymentStatus = derivePaymentStatus(amountNow, order.grandTotal);
 
   let booking;
   let transaction;
@@ -1131,7 +1194,7 @@ async function writeBookingFromOrder(order) {
       grandTotal: order.grandTotal,
       paymentMode: order.paymentMode,
       paymentModeName: order.paymentModeName,
-      paymentStatus: "paid",
+      paymentStatus: bookingPaymentStatus,
       bookingStatus: "confirmed",
       portal: order.portal,
       bookedBy: order.bookedBy,
@@ -1141,20 +1204,28 @@ async function writeBookingFromOrder(order) {
     });
 
     // ── 2. Write Transaction (payment/receipt record) ─────────────────────
-    transaction = await Transaction.create({
-      receiptNo,
-      bookingId: booking._id,
-      orderId: order._id,
-      customer: customerId,
-      paymentMode: order.paymentMode,
-      paymentModeName: order.paymentModeName,
-      amount: order.grandTotal,
-      paymentStatus: "paid",
-      portal: order.portal,
-      transactionDate: now,
-      processedBy: order.bookedBy,
-      createdBy: order.bookedBy ?? null,
-    });
+    // Skipped entirely for a $0 "pay later" confirm — a paymentStatus:
+    // "pending" booking with no Transaction row yet is exactly what
+    // recordBookingPayment() expects to find when the first installment
+    // comes in (amountPaid sums to 0 over an empty set, same as any booking
+    // with no rows), and it avoids a zero-amount Transaction that would
+    // otherwise need special-casing everywhere receipts are displayed.
+    if (amountNow > 0) {
+      transaction = await Transaction.create({
+        receiptNo,
+        bookingId: booking._id,
+        orderId: order._id,
+        customer: customerId,
+        paymentMode: order.paymentMode,
+        paymentModeName: order.paymentModeName,
+        amount: amountNow,
+        paymentStatus: "paid",
+        portal: order.portal,
+        transactionDate: now,
+        processedBy: order.bookedBy,
+        createdBy: order.bookedBy ?? null,
+      });
+    }
 
     // ── 3. Update Order ─────────────────────────────────────────────────
     await Order.findByIdAndUpdate(order._id, { orderStatus: "confirmed", bookingId: booking._id });
@@ -1178,7 +1249,7 @@ async function writeBookingFromOrder(order) {
     _id: booking._id,
     bookingNumber: booking.bookingNumber,
     orderNumber: order.orderNumber,
-    receiptNo: transaction.receiptNo,
+    receiptNo: transaction?.receiptNo ?? null,
     customer: {
       _id: customerSnap._id,
       customerCode: customerSnap.customerCode,
@@ -1194,6 +1265,8 @@ async function writeBookingFromOrder(order) {
     paymentStatus: booking.paymentStatus,
     bookingStatus: booking.bookingStatus,
     bookedAt: booking.bookedAt,
+    amountPaid: amountNow,
+    balanceAmount: +(booking.grandTotal - amountNow).toFixed(2),
   };
 }
 
@@ -1212,8 +1285,9 @@ async function confirmOrder(req, res) {
     if (!mongoose.isValidObjectId(orderId)) throw "Invalid order ID.";
 
     // No required body for cash — just validate whatever comes
-    const { error } = confirmOrderSchema.validate(req.body ?? {});
+    const { error, value } = confirmOrderSchema.validate(req.body ?? {});
     if (error) throw error.details[0].message;
+    const { paidAmount } = value;
 
     const order = await Order.findOne(
       Order.notDeletedFilter({ _id: orderId })
@@ -1253,11 +1327,16 @@ async function confirmOrder(req, res) {
       throw "Order expired — the 30-minute hold has lapsed. Please create a new order.";
     }
 
-    const confirmed = await writeBookingFromOrder(order);
+    if (paidAmount != null && paidAmount > order.grandTotal + 0.005) {
+      throw `Payment amount cannot exceed the total payable amount of ${order.grandTotal.toFixed(2)}.`;
+    }
+
+    const confirmed = await writeBookingFromOrder(order, paidAmount);
     return responseHandler({
       res,
       response: { ...confirmed, status: "confirmed" },
-      successMessage: "Booking confirmed successfully.",
+      successMessage:
+        confirmed.paymentStatus === "paid" ? "Booking confirmed successfully." : "Booking confirmed with a partial payment.",
       statusCode: 201,
     });
   } catch (error) {
@@ -1349,6 +1428,9 @@ async function listBookings(req, res) {
     if (req.query.portal && ["admin", "pos", "customer"].includes(req.query.portal)) {
       filter.portal = req.query.portal;
     }
+    if (req.query.paymentStatus && ["paid", "partial", "pending"].includes(req.query.paymentStatus)) {
+      filter.paymentStatus = req.query.paymentStatus;
+    }
     if (req.query.search) {
       const regex = searchRegex(req.query.search);
       const [matchingCustomers, matchingTransactions] = await Promise.all([
@@ -1366,37 +1448,59 @@ async function listBookings(req, res) {
       Booking.find(filter)
         .populate("customer", "customerCode name email mobileNumber")
         .populate("orderId", "orderNumber")
-        .select("bookingNumber orderId customer lines subtotal gstAmount grandTotal paymentModeName bookingStatus portal bookedAt")
+        .select(
+          "bookingNumber orderId customer lines subtotal gstAmount grandTotal paymentModeName paymentStatus bookingStatus portal bookedAt"
+        )
         .sort({ bookedAt: -1 })
         .skip((page - 1) * pageSize)
         .limit(pageSize),
       Booking.countDocuments(filter),
     ]);
 
-    // Receipt numbers live on Transaction, not Booking (see models/transactions'
-    // own comment on why) — one batched lookup instead of populate, since
-    // Booking↔Transaction isn't a declared ref in either direction.
+    // Receipt numbers (and the amount actually collected) live on
+    // Transaction, not Booking (see models/transactions' own comment on
+    // why) — one batched lookup instead of populate, since
+    // Booking↔Transaction isn't a declared ref in either direction. A
+    // booking can have more than one Transaction row now (partial payments),
+    // so this groups by booking rather than assuming a 1:1.
     const bookingIds = bookings.map((b) => b._id);
-    const transactions = await Transaction.find({ bookingId: { $in: bookingIds } }).select("bookingId receiptNo");
-    const receiptByBooking = new Map(transactions.map((t) => [String(t.bookingId), t.receiptNo]));
+    const transactions = await Transaction.find({ bookingId: { $in: bookingIds } })
+      .select("bookingId receiptNo amount paymentStatus transactionDate")
+      .sort({ transactionDate: 1 });
+    const transactionsByBooking = new Map();
+    for (const t of transactions) {
+      const key = String(t.bookingId);
+      if (!transactionsByBooking.has(key)) transactionsByBooking.set(key, []);
+      transactionsByBooking.get(key).push(t);
+    }
 
-    const items = bookings.map((b) => ({
-      _id: b._id,
-      bookingNumber: b.bookingNumber,
-      receiptNo: receiptByBooking.get(String(b._id)) ?? null,
-      orderNumber: b.orderId?.orderNumber ?? null,
-      customer: b.customer
-        ? { _id: b.customer._id, customerCode: b.customer.customerCode, name: b.customer.name }
-        : null,
-      lineType: deriveLineType(b.lines),
-      paymentModeName: b.paymentModeName,
-      subtotal: b.subtotal,
-      gstAmount: b.gstAmount,
-      grandTotal: b.grandTotal,
-      bookingStatus: b.bookingStatus,
-      portal: b.portal,
-      bookedAt: b.bookedAt,
-    }));
+    const items = bookings.map((b) => {
+      const bookingTxns = transactionsByBooking.get(String(b._id)) ?? [];
+      const amountPaid = sumPaidAmount(bookingTxns);
+      return {
+        _id: b._id,
+        bookingNumber: b.bookingNumber,
+        // First receipt issued for this booking — the one printed at
+        // confirm time. Later installments get their own receiptNo, visible
+        // in the booking detail's payment history.
+        receiptNo: bookingTxns[0]?.receiptNo ?? null,
+        orderNumber: b.orderId?.orderNumber ?? null,
+        customer: b.customer
+          ? { _id: b.customer._id, customerCode: b.customer.customerCode, name: b.customer.name }
+          : null,
+        lineType: deriveLineType(b.lines),
+        paymentModeName: b.paymentModeName,
+        subtotal: b.subtotal,
+        gstAmount: b.gstAmount,
+        grandTotal: b.grandTotal,
+        paymentStatus: b.paymentStatus,
+        amountPaid,
+        balanceAmount: +(b.grandTotal - amountPaid).toFixed(2),
+        bookingStatus: b.bookingStatus,
+        portal: b.portal,
+        bookedAt: b.bookedAt,
+      };
+    });
 
     return responseHandler({ res, response: { items, total, page, pageSize } });
   } catch (error) {
@@ -1416,33 +1520,121 @@ async function getBookingDetail(req, res) {
     const id = req.params.id;
     if (!mongoose.isValidObjectId(id)) throw "Invalid booking ID.";
 
-    const [booking, transaction] = await Promise.all([
+    const [booking, transactions] = await Promise.all([
       Booking.findOne({ _id: id })
         .populate("customer", "customerCode name email mobileNumber")
         .populate("orderId", "orderNumber orderStatus")
         .populate("paymentMode", "name")
         .populate("lines.deities", "name")
         .populate("bookedBy", "name email"),
-      Transaction.findOne({ bookingId: id }).select(
-        "receiptNo amount paymentStatus paymentModeName transactionDate processedBy"
-      ),
+      Transaction.find({ bookingId: id })
+        .select("receiptNo amount paymentStatus paymentModeName transactionDate processedBy")
+        .populate("processedBy", "name email")
+        .sort({ transactionDate: 1 }),
     ]);
 
     if (!booking) throw "Booking not found.";
+
+    const amountPaid = sumPaidAmount(transactions);
 
     return responseHandler({
       res,
       response: {
         ...booking.toObject(),
-        // Attach the transaction snapshot — the receipt number lives here,
-        // not on the Booking itself, by design (1:many for future partial
-        // payments / refunds). For the current cash-only flow it's always
-        // exactly one row.
-        transaction: transaction ?? null,
+        // Every payment collected against this booking, oldest first — the
+        // receipt number lives here, not on the Booking itself, by design
+        // (1:many, see models/transactions). A fully-paid-at-confirm booking
+        // still comes back with exactly one row here, same as before; a
+        // partial-payment booking shows its full installment history.
+        transactions,
+        amountPaid,
+        balanceAmount: +(booking.grandTotal - amountPaid).toFixed(2),
       },
     });
   } catch (error) {
     return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 404 : undefined });
+  }
+}
+
+/**
+ * POST /pos/booking/bookings/:id/payments
+ *
+ * Records one more installment against a confirmed booking that isn't fully
+ * paid yet — the "collect the rest" step of the partial-payment flow started
+ * by createOrder/confirmOrder's `paidAmount`. Writes a new Transaction row
+ * (its own receipt number) and recomputes the Booking's paymentStatus from
+ * the new total collected; never touches bookingStatus or inventory — those
+ * were already settled at confirm time, regardless of how much had been
+ * paid then.
+ */
+async function recordBookingPayment(req, res) {
+  try {
+    const bookingId = req.params.id;
+    if (!mongoose.isValidObjectId(bookingId)) throw "Invalid booking ID.";
+
+    const { error, value } = recordPaymentSchema.validate(req.body ?? {});
+    if (error) throw error.details[0].message;
+    const { amount, paymentModeId } = value;
+
+    const booking = await Booking.findOne(Booking.notDeletedFilter({ _id: bookingId }));
+    if (!booking) throw "Booking not found.";
+    if (booking.bookingStatus !== "confirmed") throw "Only confirmed bookings can receive payments.";
+
+    const existingTxns = await Transaction.find({ bookingId: booking._id }).select("amount paymentStatus");
+    const paidSoFar = sumPaidAmount(existingTxns);
+    const balance = +(booking.grandTotal - paidSoFar).toFixed(2);
+    if (balance <= 0.005) throw "This booking is already fully paid.";
+    if (amount > balance + 0.005) throw `Payment amount cannot exceed the outstanding balance of ${balance.toFixed(2)}.`;
+
+    // Defaults to the booking's own payment mode — an installment doesn't
+    // have to be collected the same way the first payment was (e.g. booked
+    // against Cash, balance topped up via PayNow later).
+    let paymentMode = booking.paymentMode;
+    let paymentModeName = booking.paymentModeName;
+    if (paymentModeId) {
+      const mode = await PaymentMode.findOne(PaymentMode.notDeletedFilter({ _id: paymentModeId, status: 1 })).select("name");
+      if (!mode) throw "Payment mode not found or inactive.";
+      paymentMode = mode._id;
+      paymentModeName = mode.name;
+    }
+
+    const receiptNo = await generateReceiptNumber();
+    const transaction = await Transaction.create({
+      receiptNo,
+      bookingId: booking._id,
+      orderId: booking.orderId,
+      customer: booking.customer,
+      paymentMode,
+      paymentModeName,
+      amount,
+      paymentStatus: "paid",
+      portal: booking.portal,
+      transactionDate: new Date(),
+      processedBy: req.auth?.userId ?? null,
+      createdBy: req.auth?.userId ?? null,
+    });
+
+    const newAmountPaid = +(paidSoFar + amount).toFixed(2);
+    booking.paymentStatus = derivePaymentStatus(newAmountPaid, booking.grandTotal);
+    await booking.save();
+
+    return responseHandler({
+      res,
+      response: {
+        receiptNo: transaction.receiptNo,
+        amount: transaction.amount,
+        paymentModeName,
+        transactionDate: transaction.transactionDate,
+        paymentStatus: booking.paymentStatus,
+        amountPaid: newAmountPaid,
+        balanceAmount: +(booking.grandTotal - newAmountPaid).toFixed(2),
+      },
+      successMessage:
+        booking.paymentStatus === "paid" ? "Payment recorded — booking is now fully paid." : "Payment recorded successfully.",
+      statusCode: 201,
+    });
+  } catch (error) {
+    return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 400 : undefined });
   }
 }
 
@@ -1460,6 +1652,26 @@ async function getBookingDetail(req, res) {
  *   /pos/admin/booking/*  → portal: "admin" (Admin Panel booking screen)
  *   (future) /pos/customer/booking/* → portal: "customer"
  */
+/**
+ * The Payment Mode picker is read by both the booking flow's "Payment Mode"
+ * selector and the POS Transactions ledger's "Record Payment" installment
+ * picker (choosing which mode a partial-payment top-up came in). Gating it
+ * on "admin-booking" view alone would 403 a cashier who only has
+ * "pos-transactions" access — either module's view level is enough to read
+ * this lookup list, since it's the same handful of harmless {_id, name}
+ * rows a booking screen already exposes to admin-booking viewers.
+ */
+function requirePaymentModeAccess(req, res, next) {
+  if (req.auth?.userType === USER_TYPES.SUPER_ADMIN) return next();
+  const perms = req.auth?.permissions ?? {};
+  if (perms["admin-booking"]?.view || perms["pos-transactions"]?.view) return next();
+  return exceptionHandler({
+    res,
+    error: "You don't have view access to Admin Booking or POS Transactions.",
+    statusCode: 403,
+  });
+}
+
 function setPortal(portalValue) {
   return function stampPortal(req, _res, next) {
     req.posPortal = portalValue;
@@ -1483,7 +1695,7 @@ function registerBookingRoutes(r) {
   r.get("/customers/:id/recent-bookings", requirePermission("admin-booking", "view"), getRecentBookings);
   r.get("/items",               requirePermission("admin-booking", "view"),       listPosItems);
   r.get("/services",            requirePermission("admin-booking", "view"),       listPosServices);
-  r.get("/payment-modes",       requirePermission("admin-booking", "view"),       listPaymentModes);
+  r.get("/payment-modes",       requirePaymentModeAccess,                         listPaymentModes);
   r.get("/catalogue",           requirePermission("admin-booking", "view"),       getCatalogue);
   r.get("/deities",             requirePermission("admin-booking", "view"),       listDeities);
   r.get("/nakshathirams",       requirePermission("admin-booking", "view"),       listNakshathirams);
@@ -1498,6 +1710,9 @@ function registerBookingRoutes(r) {
   // ── Transaction ledger (read) ──────────────────────────────────────────
   r.get("/bookings",            requirePermission("pos-transactions", "view"),    listBookings);
   r.get("/bookings/:id",        requirePermission("pos-transactions", "view"),    getBookingDetail);
+
+  // ── Partial payment (write) ────────────────────────────────────────────
+  r.post("/bookings/:id/payments", requirePermission("pos-transactions", "fullAccess"), validateBody(recordPaymentSchema), recordBookingPayment);
 }
 
 const router = express.Router();
@@ -1527,3 +1742,4 @@ module.exports.createOrder = createOrder;
 module.exports.confirmOrder = confirmOrder;
 module.exports.getOrderStatus = getOrderStatus;
 module.exports.effectiveQuantity = effectiveQuantity;
+module.exports.recordBookingPayment = recordBookingPayment;

@@ -59,7 +59,13 @@ const bookingSchema = new mongoose.Schema({
 
   paymentMode: { type: mongoose.Schema.Types.ObjectId, ref: "PaymentMode", required: true },
   paymentModeName: { type: String, required: true },
-  paymentStatus: { type: String, enum: ["paid", "pending"], default: "paid" },
+  // "paid"    → amountPaid (summed across this booking's Transaction rows,
+  //             see models/transactions) has reached grandTotal
+  // "partial" → some but not all of grandTotal has been collected; more
+  //             Transaction rows can still be appended via
+  //             POST /pos/booking/bookings/:id/payments
+  // "pending" → confirmed with nothing collected yet (a "pay later" booking)
+  paymentStatus: { type: String, enum: ["paid", "partial", "pending"], default: "paid" },
 
   bookingStatus: { type: String, enum: BOOKING_STATUSES, default: "confirmed" },
 
@@ -93,6 +99,7 @@ bookingSchema.plugin(auditablePlugin);
 bookingSchema.index({ bookingNumber: 1 }, { unique: true });
 bookingSchema.index({ customer: 1, createdAt: -1 });
 bookingSchema.index({ bookingStatus: 1, createdAt: -1 });
+bookingSchema.index({ paymentStatus: 1, createdAt: -1 });
 bookingSchema.index({ portal: 1, createdAt: -1 });
 bookingSchema.index({ orderId: 1 });
 

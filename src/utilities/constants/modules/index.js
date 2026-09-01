@@ -22,6 +22,11 @@
  *   inventory        → GET /inventory/options, /available-stock, /low-stock, /history
  *                      POST /inventory/adjustments
  *   pos-transactions → GET /pos/booking/bookings, /pos/booking/bookings/:id
+ *                      POST /pos/booking/bookings/:id/payments (fullAccess —
+ *                      collecting a partial-payment installment)
+ *                      GET /pos/booking/payment-modes also accepts this
+ *                      module's view level (or admin-booking's) — see
+ *                      requirePaymentModeAccess() in controllers/pos
  *
  * Level semantics, applied consistently by every route:
  *   view       → read-only (GET)

@@ -6,12 +6,13 @@ const { PORTAL_TYPES } = require("../orders");
  * A Transaction is the payment-specific record for a confirmed Booking —
  * receipt number, payment mode, amount, and status — kept separate from the
  * Booking header on purpose so payment history isn't locked into a 1:1
- * shape. Today the POS flow pays in full at confirm time, so it's always
- * exactly one Transaction per Booking, but `bookingId` is deliberately not
- * unique-constrained: a future partial-payment or refund flow can append
- * more rows against the same booking without a schema change, the same way
- * a booking's totalAmountPaid would eventually need to be summed across
- * its transactions rather than read off a single row.
+ * shape. `bookingId` is deliberately not unique-constrained: a full-payment
+ * confirm still writes exactly one row, but the partial-payment flow
+ * (POST /pos/booking/bookings/:id/payments) appends further rows against the
+ * same booking as the balance is collected. A booking's amountPaid is never
+ * stored redundantly — it's always the sum of this booking's "paid" rows,
+ * computed at read time (see getPaidAmount() in controllers/pos), so there is
+ * exactly one source of truth for how much has actually been collected.
  */
 
 const TRANSACTION_STATUSES = ["paid", "pending", "refunded"];
