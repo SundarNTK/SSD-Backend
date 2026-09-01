@@ -1,6 +1,7 @@
 const express = require("express");
 const requirePermission = require("../../common/middleware/require-permission");
 const validateBody = require("../../common/middleware/validate");
+const { uploadSubCategoryImage, hydrateMultipartBody } = require("../../common/middleware/upload");
 const makeCrudController = require("../../common/factories/crud-controller");
 
 const SubCategory = require("../../models/sub-categories");
@@ -16,8 +17,22 @@ const crud = makeCrudController(SubCategory, {
 });
 
 router.get("/sub-categories", requirePermission("sub-categories", "view"), crud.list);
-router.post("/sub-categories", requirePermission("sub-categories", "fullAccess"), validateBody(createSchema), crud.create);
-router.put("/sub-categories/:id", requirePermission("sub-categories", "edit"), validateBody(updateSchema), crud.update);
+router.post(
+  "/sub-categories",
+  requirePermission("sub-categories", "fullAccess"),
+  uploadSubCategoryImage,
+  hydrateMultipartBody,
+  validateBody(createSchema),
+  crud.create
+);
+router.put(
+  "/sub-categories/:id",
+  requirePermission("sub-categories", "edit"),
+  uploadSubCategoryImage,
+  hydrateMultipartBody,
+  validateBody(updateSchema),
+  crud.update
+);
 router.delete("/sub-categories/:id", requirePermission("sub-categories", "fullAccess"), crud.remove);
 
 module.exports = router;
