@@ -264,7 +264,7 @@ async function createWalkInCustomer(req, res) {
       if (mobileTaken) throw "A devotee profile already uses this mobile number.";
     }
 
-    const entityId = req.auth?.entityId || (await Entity.findOne({ code: env.DEFAULT_ENTITY_CODE }))?._id;
+    const entityId = req.auth?.entityId || (await Entity.findOne(Entity.notDeletedFilter({ code: env.DEFAULT_ENTITY_CODE })))?._id;
     if (!entityId) throw "No temple entity is configured.";
 
     const customer = await createCustomerProfile({
@@ -329,7 +329,7 @@ async function getRecentBookings(req, res) {
     if (!mongoose.isValidObjectId(customerId)) throw "Invalid customer ID.";
     const limit = Math.min(10, Math.max(1, Number(req.query.limit) || 3));
 
-    const bookings = await Booking.find({ customer: customerId, bookingStatus: "confirmed" })
+    const bookings = await Booking.find(Booking.notDeletedFilter({ customer: customerId, bookingStatus: "confirmed" }))
       .select("bookingNumber orderId lines grandTotal bookedAt")
       .populate("orderId", "orderNumber")
       .populate("lines.deities", "name")
@@ -376,8 +376,8 @@ async function listPosItems(req, res) {
 
     const [items, total] = await Promise.all([
       Item.find(filter)
-        .populate("categoryDetails.category", "name color")
-        .populate("categoryDetails.subCategory", "name")
+        .populate({ path: "categoryDetails.category", select: "name color", match: { isDeleted: false, status: 1 } })
+        .populate({ path: "categoryDetails.subCategory", select: "name", match: { isDeleted: false, status: 1 } })
         .populate("generalLedger", "gstType")
         .populate("deityMapping", "name")
         .select("name tamilName code salePrice isInventoryApplicable currentStock threshold isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers minQuantity maxQuantity categoryDetails")
@@ -418,8 +418,8 @@ async function listPosServices(req, res) {
 
     const [services, total] = await Promise.all([
       Service.find(filter)
-        .populate("categoryDetails.category", "name color")
-        .populate("categoryDetails.subCategory", "name")
+        .populate({ path: "categoryDetails.category", select: "name color", match: { isDeleted: false, status: 1 } })
+        .populate({ path: "categoryDetails.subCategory", select: "name", match: { isDeleted: false, status: 1 } })
         .populate("deityMapping", "name")
         .select("name tamilName code salePrice categoryDetails isInventoryRequired currentStock thresholdCount isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers sessionRequired")
         .sort({ name: 1 })
@@ -574,19 +574,16 @@ async function getCatalogue(req, res) {
       // surfacing a "—" placeholder folder/category pill in POS.
       if (!categoryById.has(catId)) return;
 
-      // Counted against the category pill either way — a subCategory-less
-      // mapping still belongs to this category, it just has no folder to
-      // sit in below it.
+      const subId = cd.subCategory ? String(cd.subCategory) : null;
+      // Sub-category was deleted or inactivated — do not count this mapping
+      // and do not fall back to a loose card (that inflated category pills).
+      if (subId && !subCategoryById.has(subId)) return;
+
       const perCategory = kind === "Item" ? categoryItemIds : categoryServiceIds;
       if (!perCategory.has(catId)) perCategory.set(catId, new Set());
       perCategory.get(catId).add(String(docId));
 
-      // Same idea for the sub-category: if it's been deactivated/deleted
-      // (or the row simply has none), there's no folder to file into, so
-      // this falls back to showing the item/service directly under its
-      // category instead of a "—" folder.
-      const subId = cd.subCategory ? String(cd.subCategory) : null;
-      if (!subId || !subCategoryById.has(subId)) {
+      if (!subId) {
         const map = kind === "Item" ? categoryOnlyItemIds : categoryOnlyServiceIds;
         if (!map.has(String(docId))) map.set(String(docId), catId);
         return;
@@ -643,9 +640,11 @@ async function getCatalogue(req, res) {
     const categoriesOut = categories
       .map((c) => {
         const catId = String(c._id);
-        const itemCount = categoryItemIds.get(catId)?.size ?? 0;
-        const serviceCount = categoryServiceIds.get(catId)?.size ?? 0;
-        return { _id: c._id, name: c.name, color: c.color, count: itemCount + serviceCount };
+        const folderCount = folders.filter((f) => f.categoryIds.includes(catId)).length;
+        const looseCount =
+          [...categoryOnlyItemIds.values()].filter((id) => id === catId).length +
+          [...categoryOnlyServiceIds.values()].filter((id) => id === catId).length;
+        return { _id: c._id, name: c.name, color: c.color, count: folderCount + looseCount };
       })
       .filter((c) => c.count > 0);
 
@@ -658,7 +657,7 @@ async function getCatalogue(req, res) {
     const [uncategorizedItemsRaw, uncategorizedServicesRaw] = await Promise.all([
       allUncategorizedItemIds.length
         ? decorateItems(
-            await Item.find({ _id: { $in: allUncategorizedItemIds } })
+            await Item.find(Item.notDeletedFilter({ _id: { $in: allUncategorizedItemIds }, status: 1, posAvailability: true }))
               .populate("deityMapping", "name")
               .select(
                 "name tamilName code salePrice isInventoryApplicable currentStock threshold isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers minQuantity maxQuantity categoryDetails"
@@ -667,7 +666,7 @@ async function getCatalogue(req, res) {
         : [],
       allUncategorizedServiceIds.length
         ? decorateServices(
-            await Service.find({ _id: { $in: allUncategorizedServiceIds } })
+            await Service.find(Service.notDeletedFilter({ _id: { $in: allUncategorizedServiceIds }, status: 1, isPosAvailable: true }))
               .populate("deityMapping", "name")
               .select(
                 "name tamilName code salePrice categoryDetails isInventoryRequired currentStock thresholdCount isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers sessionRequired"
@@ -689,7 +688,7 @@ async function getCatalogue(req, res) {
       res,
       response: {
         categories: categoriesOut,
-        totalCount: items.length + services.length,
+        totalCount: folders.length + uncategorizedItems.length + uncategorizedServices.length,
         folders,
         uncategorizedItems,
         uncategorizedServices,
@@ -1307,7 +1306,7 @@ async function confirmOrder(req, res) {
           .populate("customer", "customerCode name email mobileNumber")
           .populate("lines.deities", "name")
           .populate("bookedBy", "name email"),
-        Transaction.findOne({ orderId: order._id }),
+        Transaction.findOne(Transaction.notDeletedFilter({ orderId: order._id })),
       ]);
       if (!existing) throw "Booking record not found for this confirmed order.";
       return responseHandler({
@@ -1373,7 +1372,7 @@ async function getOrderStatus(req, res) {
           .populate("customer", "customerCode name email mobileNumber")
           .populate("lines.deities", "name")
           .populate("bookedBy", "name email"),
-        Transaction.findOne({ orderId: order._id }),
+        Transaction.findOne(Transaction.notDeletedFilter({ orderId: order._id })),
       ]);
       if (!booking) throw "Booking record not found for this confirmed order.";
       return responseHandler({
@@ -1424,7 +1423,7 @@ async function listBookings(req, res) {
     const page = Math.max(1, Number(req.query.page) || 1);
     const pageSize = Math.min(100, Number(req.query.pageSize) || 20);
 
-    const filter = {};
+    const filter = Booking.notDeletedFilter();
     if (req.query.status && BOOKING_STATUSES.includes(req.query.status)) {
       filter.bookingStatus = req.query.status;
     }
@@ -1437,8 +1436,8 @@ async function listBookings(req, res) {
     if (req.query.search) {
       const regex = searchRegex(req.query.search);
       const [matchingCustomers, matchingTransactions] = await Promise.all([
-        Customer.find({ name: regex }).select("_id"),
-        Transaction.find({ receiptNo: regex }).select("bookingId"),
+        Customer.find(Customer.notDeletedFilter({ name: regex })).select("_id"),
+        Transaction.find(Transaction.notDeletedFilter({ receiptNo: regex })).select("bookingId"),
       ]);
       filter.$or = [
         { bookingNumber: regex },
@@ -1467,7 +1466,7 @@ async function listBookings(req, res) {
     // booking can have more than one Transaction row now (partial payments),
     // so this groups by booking rather than assuming a 1:1.
     const bookingIds = bookings.map((b) => b._id);
-    const transactions = await Transaction.find({ bookingId: { $in: bookingIds } })
+    const transactions = await Transaction.find(Transaction.notDeletedFilter({ bookingId: { $in: bookingIds } }))
       .select("bookingId receiptNo amount paymentStatus transactionDate")
       .sort({ transactionDate: 1 });
     const transactionsByBooking = new Map();
@@ -1524,13 +1523,13 @@ async function getBookingDetail(req, res) {
     if (!mongoose.isValidObjectId(id)) throw "Invalid booking ID.";
 
     const [booking, transactions] = await Promise.all([
-      Booking.findOne({ _id: id })
+      Booking.findOne(Booking.notDeletedFilter({ _id: id }))
         .populate("customer", "customerCode name email mobileNumber")
         .populate("orderId", "orderNumber orderStatus")
         .populate("paymentMode", "name")
         .populate("lines.deities", "name")
         .populate("bookedBy", "name email"),
-      Transaction.find({ bookingId: id })
+      Transaction.find(Transaction.notDeletedFilter({ bookingId: id }))
         .select("receiptNo amount paymentStatus paymentModeName transactionDate processedBy")
         .populate("processedBy", "name email")
         .sort({ transactionDate: 1 }),
@@ -1583,7 +1582,7 @@ async function recordBookingPayment(req, res) {
     if (!booking) throw "Booking not found.";
     if (booking.bookingStatus !== "confirmed") throw "Only confirmed bookings can receive payments.";
 
-    const existingTxns = await Transaction.find({ bookingId: booking._id }).select("amount paymentStatus");
+    const existingTxns = await Transaction.find(Transaction.notDeletedFilter({ bookingId: booking._id })).select("amount paymentStatus");
     const paidSoFar = sumPaidAmount(existingTxns);
     const balance = +(booking.grandTotal - paidSoFar).toFixed(2);
     if (balance <= 0.005) throw "This booking is already fully paid.";
