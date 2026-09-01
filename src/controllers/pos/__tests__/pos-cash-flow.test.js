@@ -30,7 +30,7 @@ const { Booking } = require("../../../models/bookings");
 const { Transaction } = require("../../../models/transactions");
 const { placeReservationsForOrder, consumeReservations, cancelReservations } = require("../inventory-reservation");
 const { nextSequence } = require("../../../common/utils/sequence");
-const { createOrder, confirmOrder, getOrderStatus, effectiveQuantity } = require("../index");
+const { createOrder, confirmOrder, getOrderStatus, effectiveQuantity, recordBookingPayment } = require("../index");
 
 const RECEIPT_NO = "RCP-20260826-0001";
 
@@ -232,6 +232,66 @@ describe("createOrder (Cash flow)", () => {
     expect(Order.findByIdAndUpdate).toHaveBeenCalledWith(ORDER_ID, { orderStatus: "cancelled" });
     expect(res.status).toHaveBeenCalledWith(400);
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining("Insufficient stock") }));
+  });
+});
+
+describe("createOrder (partial payment)", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+
+    Customer.findOne = jest.fn(() => mockQuery(validCustomer));
+    PaymentMode.findOne = jest.fn(() => mockQuery(validPaymentMode));
+    Service.findOne = jest.fn(() => mockQuery(validService));
+    Item.findOne = jest.fn(() => mockQuery(null));
+    Order.create = jest.fn(async (doc) => ({ _id: ORDER_ID, ...doc }));
+    Order.findByIdAndUpdate = jest.fn(async () => {});
+    Booking.create = jest.fn(async (doc) => ({ _id: BOOKING_ID, ...doc }));
+    Transaction.create = jest.fn(async (doc) => ({ _id: "999999999999999999999999", ...doc }));
+
+    nextSequence.mockResolvedValue(1);
+    placeReservationsForOrder.mockResolvedValue([]);
+    consumeReservations.mockResolvedValue(undefined);
+  });
+
+  it("confirms with paymentStatus 'partial' when paidAmount is less than the priced grandTotal", async () => {
+    const req = { body: baseOrderBody({ paidAmount: 100 }), auth: { userId: USER_ID, entityId: null } };
+    const res = mockRes();
+
+    await createOrder(req, res);
+
+    expect(Booking.create).toHaveBeenCalledWith(
+      expect.objectContaining({ paymentStatus: "partial", bookingStatus: "confirmed", grandTotal: 175 })
+    );
+    expect(Transaction.create).toHaveBeenCalledWith(expect.objectContaining({ amount: 100, paymentStatus: "paid" }));
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ paymentStatus: "partial", amountPaid: 100, balanceAmount: 75 }),
+      })
+    );
+  });
+
+  it("confirms with paymentStatus 'pending' and writes no Transaction when paidAmount is 0 (pay later)", async () => {
+    const req = { body: baseOrderBody({ paidAmount: 0 }), auth: { userId: USER_ID, entityId: null } };
+    const res = mockRes();
+
+    await createOrder(req, res);
+
+    expect(Booking.create).toHaveBeenCalledWith(expect.objectContaining({ paymentStatus: "pending" }));
+    expect(Transaction.create).not.toHaveBeenCalled();
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ paymentStatus: "pending", amountPaid: 0, balanceAmount: 175, receiptNo: null }) })
+    );
+  });
+
+  it("rejects a paidAmount greater than the priced grandTotal, before ever writing the order", async () => {
+    const req = { body: baseOrderBody({ paidAmount: 200 }), auth: { userId: USER_ID, entityId: null } };
+    const res = mockRes();
+
+    await createOrder(req, res);
+
+    expect(Order.create).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining("cannot exceed") }));
   });
 });
 
@@ -450,5 +510,111 @@ describe("getOrderStatus", () => {
 
     expect(res.status).toHaveBeenCalledWith(400);
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ message: "Order not found." }));
+  });
+});
+
+describe("recordBookingPayment (collect the rest of a partial payment)", () => {
+  function confirmedBooking(overrides = {}) {
+    return {
+      _id: BOOKING_ID,
+      orderId: ORDER_ID,
+      customer: CUSTOMER_ID,
+      grandTotal: 175,
+      paymentMode: PAYMENT_MODE_ID,
+      paymentModeName: "Cash",
+      paymentStatus: "partial",
+      bookingStatus: "confirmed",
+      portal: "admin",
+      save: jest.fn(async function save() {
+        return this;
+      }),
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+
+    Booking.findOne = jest.fn(() => mockQuery(confirmedBooking()));
+    Transaction.find = jest.fn(() => mockQuery([{ amount: 100, paymentStatus: "paid" }]));
+    Transaction.create = jest.fn(async (doc) => ({ _id: "888888888888888888888888", ...doc }));
+    PaymentMode.findOne = jest.fn(() => mockQuery(validPaymentMode));
+
+    nextSequence.mockResolvedValue(2);
+  });
+
+  it("records an installment that clears the balance and flips paymentStatus to 'paid'", async () => {
+    const req = { params: { id: BOOKING_ID }, body: { amount: 75 }, auth: { userId: USER_ID } };
+    const res = mockRes();
+
+    await recordBookingPayment(req, res);
+
+    expect(Transaction.create).toHaveBeenCalledWith(
+      expect.objectContaining({ bookingId: BOOKING_ID, amount: 75, paymentStatus: "paid", paymentModeName: "Cash" })
+    );
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ paymentStatus: "paid", amountPaid: 175, balanceAmount: 0 }) })
+    );
+  });
+
+  it("records a partial installment that leaves the booking still 'partial'", async () => {
+    const req = { params: { id: BOOKING_ID }, body: { amount: 25 }, auth: { userId: USER_ID } };
+    const res = mockRes();
+
+    await recordBookingPayment(req, res);
+
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ paymentStatus: "partial", amountPaid: 125, balanceAmount: 50 }) })
+    );
+  });
+
+  it("rejects an amount greater than the outstanding balance", async () => {
+    const req = { params: { id: BOOKING_ID }, body: { amount: 999 }, auth: { userId: USER_ID } };
+    const res = mockRes();
+
+    await recordBookingPayment(req, res);
+
+    expect(Transaction.create).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining("outstanding balance") }));
+  });
+
+  it("rejects paying a booking that's already fully paid", async () => {
+    Booking.findOne = jest.fn(() => mockQuery(confirmedBooking({ paymentStatus: "paid" })));
+    Transaction.find = jest.fn(() => mockQuery([{ amount: 175, paymentStatus: "paid" }]));
+    const req = { params: { id: BOOKING_ID }, body: { amount: 10 }, auth: { userId: USER_ID } };
+    const res = mockRes();
+
+    await recordBookingPayment(req, res);
+
+    expect(Transaction.create).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining("already fully paid") }));
+  });
+
+  it("rejects payments against a cancelled booking", async () => {
+    Booking.findOne = jest.fn(() => mockQuery(confirmedBooking({ bookingStatus: "cancelled" })));
+    const req = { params: { id: BOOKING_ID }, body: { amount: 10 }, auth: { userId: USER_ID } };
+    const res = mockRes();
+
+    await recordBookingPayment(req, res);
+
+    expect(Transaction.create).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(400);
+  });
+
+  it("collects an installment via a different payment mode than the booking's original one", async () => {
+    PaymentMode.findOne = jest.fn(() => mockQuery({ _id: "cccccccccccccccccccccccd", name: "PayNow" }));
+    const req = {
+      params: { id: BOOKING_ID },
+      body: { amount: 75, paymentModeId: "cccccccccccccccccccccccd" },
+      auth: { userId: USER_ID },
+    };
+    const res = mockRes();
+
+    await recordBookingPayment(req, res);
+
+    expect(Transaction.create).toHaveBeenCalledWith(expect.objectContaining({ paymentModeName: "PayNow" }));
   });
 });
