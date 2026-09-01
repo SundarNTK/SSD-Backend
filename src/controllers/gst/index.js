@@ -6,7 +6,7 @@ const { responseHandler, exceptionHandler } = require("../../utilities/handlers"
 
 const Gst = require("../../models/gst");
 const GeneralLedger = require("../../models/general-ledgers");
-const { GST_TYPES } = require("../../utilities/constants/gst-types");
+const { canonicalGstType, gstTypeMatchValues, isOfficialType, isZeroRateGstType, validateGstPercentage } = require("../../utilities/constants/gst-types");
 const { createSchema, updateSchema } = require("./request-objects");
 
 const router = express.Router();
@@ -20,7 +20,7 @@ async function list(req, res) {
     if (req.query.status !== undefined && req.query.status !== "") {
       filter.status = Number(req.query.status);
     }
-    if (req.query.type) filter.type = String(req.query.type);
+    if (req.query.type) filter.type = { $in: gstTypeMatchValues(String(req.query.type)) };
 
     if (req.query.search) {
       const regex = new RegExp(escapeRegex(req.query.search.trim()), "i");
@@ -43,21 +43,30 @@ async function findOtherActive(type, excludeId) {
   const filter = {
     isDeleted: false,
     status: 1,
-    type,
+    type: { $in: gstTypeMatchValues(type) },
   };
   if (excludeId) filter._id = { $ne: excludeId };
   return Gst.findOne(filter);
 }
 
-function isOfficialType(type) {
-  return GST_TYPES.includes(type);
+function applyGstTypeRules(body, fallbackType) {
+  if (body.type) body.type = canonicalGstType(body.type);
+  const type = body.type ?? fallbackType;
+  if (type && isZeroRateGstType(type)) {
+    if (body.percentage !== undefined || body.type) body.percentage = 0;
+  }
+  const percentage = body.percentage;
+  if (type && percentage !== undefined) {
+    return validateGstPercentage(type, percentage);
+  }
+  return null;
 }
 
 async function lastActiveMessage(type, excludeId) {
   if (!isOfficialType(type)) return null;
   const other = await findOtherActive(type, excludeId);
   if (other) return null;
-  return `Can't inactivate this GST. At least one "${type}" record must stay active.`;
+  return `Can't inactivate this GST. At least one "${canonicalGstType(type)}" record must stay active.`;
 }
 
 async function deactivateGst(doc, userId) {
@@ -76,6 +85,10 @@ async function retargetLedgers(fromGstId, toGstId, userId) {
 async function create(req, res) {
   try {
     const { replaceActive, ...body } = req.body;
+    const typeError = applyGstTypeRules(body);
+    if (typeError) {
+      return exceptionHandler({ res, error: typeError, statusCode: 400 });
+    }
     const wantsActive = Number(body.status) === 1;
     let replaced = null;
     if (!wantsActive) {
@@ -120,6 +133,11 @@ async function update(req, res) {
     const { replaceActive, ...body } = req.body;
     const doc = await Gst.findOne(Gst.notDeletedFilter({ _id: req.params.id }));
     if (!doc) throw "Record not found.";
+
+    const typeError = applyGstTypeRules(body, doc.type);
+    if (typeError) {
+      return exceptionHandler({ res, error: typeError, statusCode: 400 });
+    }
 
     const nextType = body.type ?? doc.type;
     const nextStatus = body.status !== undefined ? Number(body.status) : doc.status;

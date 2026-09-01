@@ -53,6 +53,7 @@ const adminOnly = require("../../common/middleware/admin-only");
 const requirePermission = require("../../common/middleware/require-permission");
 const validateBody = require("../../common/middleware/validate");
 const { USER_TYPES } = require("../../utilities/constants/user-types");
+const { isZeroRateGstType } = require("../../utilities/constants/gst-types");
 const { responseHandler, exceptionHandler } = require("../../utilities/handlers");
 const { nextSequence } = require("../../common/utils/sequence");
 const escapeRegex = require("../../common/utils/escape-regex");
@@ -167,16 +168,18 @@ function derivePaymentStatus(amountPaid, grandTotal) {
 
 /**
  * Fetch the GST percentage for a General Ledger (populated on Item/Service).
- * Returns 0 if the GL has no GST — the GST master's own `percentage` field
- * is the single source of truth for the rate (0 for "Exempted"/"Zero-rated"
- * rows), so there's no separate `type` string to special-case here.
+ * Standard Rated uses the configured rate. Exempt, Zero-Rated, and Out of
+ * Scope always resolve to 0 — GST is not calculated for those types.
  */
 async function resolveGstRate(generalLedgerId) {
   if (!generalLedgerId) return 0;
   try {
     const GeneralLedger = mongoose.model("GeneralLedger");
     const gl = await GeneralLedger.findById(generalLedgerId).populate("gstType");
-    return gl?.gstType?.percentage ?? 0;
+    const gst = gl?.gstType;
+    if (!gst) return 0;
+    if (isZeroRateGstType(gst.type)) return 0;
+    return gst.percentage ?? 0;
   } catch {
     return 0;
   }
