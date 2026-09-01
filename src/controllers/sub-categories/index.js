@@ -10,7 +10,10 @@ const { createSchema, updateSchema } = require("./request-objects");
 // once for the whole /masters group there, not per master).
 const router = express.Router();
 
-const crud = makeCrudController(SubCategory, { searchFields: ["name", "tamilName", "code"] });
+const crud = makeCrudController(SubCategory, {
+  searchFields: ["name", "tamilName", "code"],
+  populate: [{ path: "category", select: "name" }],
+});
 
 router.get("/sub-categories", requirePermission("sub-categories", "view"), crud.list);
 router.post("/sub-categories", requirePermission("sub-categories", "fullAccess"), validateBody(createSchema), crud.create);

@@ -32,6 +32,17 @@ const summarySchema = Joi.object({
 });
 
 /**
+ * How much of the order/booking's grandTotal is being collected right now.
+ * Omitted entirely (undefined) means "pay in full" — every existing caller
+ * that never sends this field keeps behaving exactly as before. Sending it
+ * opens the partial-payment flow: any amount from 0 (confirm now, collect
+ * later) up to the not-yet-known grandTotal is accepted here — the upper
+ * bound is only checkable once the server has priced the cart, so the real
+ * "can't exceed grandTotal" guard lives in the controller, not this schema.
+ */
+const paidAmountSchema = Joi.number().min(0).precision(2).optional();
+
+/**
  * POST /pos/booking/orders
  * Creates an order record and places inventory reservations.
  */
@@ -39,6 +50,7 @@ const createOrderSchema = Joi.object({
   customerId: Joi.string().hex().length(24).required(),
   lines: Joi.array().items(cartLineSchema).min(1).required(),
   paymentModeId: Joi.string().hex().length(24).required(),
+  paidAmount: paidAmountSchema,
 });
 
 /**
@@ -51,6 +63,20 @@ const confirmOrderSchema = Joi.object({
   // Reserved for future online-payment receipt data (PayNow ref, etc.)
   // For cash the body may be empty or omitted entirely.
   paymentReference: Joi.string().trim().allow("", null).default(null),
+  paidAmount: paidAmountSchema,
+});
+
+/**
+ * POST /pos/booking/bookings/:id/payments
+ * Records one more payment against an already-confirmed booking that isn't
+ * fully paid yet — the "collect the rest of the balance" step of the
+ * partial-payment flow. `paymentModeId` is optional: omit it to collect the
+ * installment via the booking's original payment mode, or pass a different
+ * mode's id (e.g. booked against Cash, topping up via PayNow).
+ */
+const recordPaymentSchema = Joi.object({
+  amount: Joi.number().greater(0).precision(2).required(),
+  paymentModeId: Joi.string().hex().length(24).allow(null).default(null),
 });
 
 /**
@@ -99,4 +125,5 @@ module.exports = {
   customerSearchSchema,
   createCustomerSchema,
   recheckLinesSchema,
+  recordPaymentSchema,
 };
