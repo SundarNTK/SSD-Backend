@@ -1,7 +1,7 @@
 const express = require("express");
 const requirePermission = require("../../common/middleware/require-permission");
 const validateBody = require("../../common/middleware/validate");
-const { uploadCategoryImage } = require("../../common/middleware/upload");
+const { uploadCategoryImage, hydrateMultipartBody } = require("../../common/middleware/upload");
 const makeCrudController = require("../../common/factories/crud-controller");
 
 const Category = require("../../models/categories");
@@ -21,6 +21,7 @@ router.post(
   "/categories",
   requirePermission("categories", "fullAccess"),
   uploadCategoryImage,
+  hydrateMultipartBody,
   validateBody(createSchema),
   crud.create
 );
@@ -28,6 +29,7 @@ router.put(
   "/categories/:id",
   requirePermission("categories", "edit"),
   uploadCategoryImage,
+  hydrateMultipartBody,
   validateBody(updateSchema),
   crud.update
 );

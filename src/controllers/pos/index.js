@@ -380,7 +380,7 @@ async function listPosItems(req, res) {
         .populate({ path: "categoryDetails.subCategory", select: "name", match: { isDeleted: false, status: 1 } })
         .populate("generalLedger", "gstType")
         .populate("deityMapping", "name")
-        .select("name tamilName code salePrice isInventoryApplicable currentStock threshold isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers minQuantity maxQuantity categoryDetails")
+        .select("name tamilName code salePrice isInventoryApplicable currentStock threshold isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers minQuantity maxQuantity categoryDetails image")
         .sort({ name: 1 })
         .skip((page - 1) * pageSize)
         .limit(pageSize),
@@ -421,7 +421,7 @@ async function listPosServices(req, res) {
         .populate({ path: "categoryDetails.category", select: "name color", match: { isDeleted: false, status: 1 } })
         .populate({ path: "categoryDetails.subCategory", select: "name", match: { isDeleted: false, status: 1 } })
         .populate("deityMapping", "name")
-        .select("name tamilName code salePrice categoryDetails isInventoryRequired currentStock thresholdCount isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers sessionRequired")
+        .select("name tamilName code salePrice categoryDetails isInventoryRequired currentStock thresholdCount isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers sessionRequired image")
         .sort({ name: 1 })
         .skip((page - 1) * pageSize)
         .limit(pageSize),
@@ -451,6 +451,7 @@ async function decorateItems(items) {
         name: item.name,
         tamilName: item.tamilName,
         salePrice: item.salePrice,
+        image: item.image || null,
         isDeityMappingRequired: item.isDeityMappingRequired,
         deityMapping: item.deityMapping,
         isFamilyMembersRequired: item.isFamilyMembersRequired,
@@ -474,6 +475,7 @@ async function decorateServices(services) {
         name: svc.name,
         tamilName: svc.tamilName,
         defaultSalePrice: svc.salePrice ?? 0,
+        image: svc.image || null,
         categoryDetails: svc.categoryDetails,
         isDeityMappingRequired: svc.isDeityMappingRequired,
         deityMapping: svc.deityMapping,
@@ -538,7 +540,7 @@ async function getCatalogue(req, res) {
     const [items, services, categories] = await Promise.all([
       Item.find(Item.notDeletedFilter({ status: 1, posAvailability: true })).select("categoryDetails"),
       Service.find(Service.notDeletedFilter({ status: 1, isPosAvailable: true })).select("categoryDetails"),
-      Category.find(Category.notDeletedFilter({ status: 1 })).select("name color").sort({ displayOrder: 1, name: 1 }),
+      Category.find(Category.notDeletedFilter({ status: 1 })).select("name color image").sort({ displayOrder: 1, name: 1 }),
     ]);
 
     const subCategoryIds = new Set();
@@ -549,7 +551,7 @@ async function getCatalogue(req, res) {
     }
     const subCategories = await SubCategory.find(
       SubCategory.notDeletedFilter({ status: 1, _id: { $in: [...subCategoryIds] } })
-    ).select("name tamilName color");
+    ).select("name tamilName color image");
     const subCategoryById = new Map(subCategories.map((s) => [String(s._id), s]));
     const categoryById = new Map(categories.map((c) => [String(c._id), c]));
 
@@ -596,6 +598,7 @@ async function getCatalogue(req, res) {
           subCategoryName: subCategoryById.get(subId)?.name ?? "—",
           subCategoryTamilName: subCategoryById.get(subId)?.tamilName || null,
           color: subCategoryById.get(subId)?.color ?? null,
+          image: subCategoryById.get(subId)?.image || null,
           itemIds: new Set(),
           serviceIds: new Set(),
         });
@@ -631,6 +634,7 @@ async function getCatalogue(req, res) {
         subCategoryName: f.subCategoryName,
         subCategoryTamilName: f.subCategoryTamilName,
         color: f.color,
+        image: f.image || null,
         itemCount: f.itemIds.size,
         serviceCount: f.serviceIds.size,
         total: f.itemIds.size + f.serviceIds.size,
@@ -644,7 +648,7 @@ async function getCatalogue(req, res) {
         const looseCount =
           [...categoryOnlyItemIds.values()].filter((id) => id === catId).length +
           [...categoryOnlyServiceIds.values()].filter((id) => id === catId).length;
-        return { _id: c._id, name: c.name, color: c.color, count: folderCount + looseCount };
+        return { _id: c._id, name: c.name, color: c.color, image: c.image || null, count: folderCount + looseCount };
       })
       .filter((c) => c.count > 0);
 
@@ -660,7 +664,7 @@ async function getCatalogue(req, res) {
             await Item.find(Item.notDeletedFilter({ _id: { $in: allUncategorizedItemIds }, status: 1, posAvailability: true }))
               .populate("deityMapping", "name")
               .select(
-                "name tamilName code salePrice isInventoryApplicable currentStock threshold isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers minQuantity maxQuantity categoryDetails"
+                "name tamilName code salePrice isInventoryApplicable currentStock threshold isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers minQuantity maxQuantity categoryDetails image"
               )
           )
         : [],
@@ -669,7 +673,7 @@ async function getCatalogue(req, res) {
             await Service.find(Service.notDeletedFilter({ _id: { $in: allUncategorizedServiceIds }, status: 1, isPosAvailable: true }))
               .populate("deityMapping", "name")
               .select(
-                "name tamilName code salePrice categoryDetails isInventoryRequired currentStock thresholdCount isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers sessionRequired"
+                "name tamilName code salePrice categoryDetails isInventoryRequired currentStock thresholdCount isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers sessionRequired image"
               )
           )
         : [],

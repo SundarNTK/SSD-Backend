@@ -28,6 +28,7 @@ const serviceSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
   tamilName: { type: String, default: "" },
   description: { type: String, default: "" },
+  image: { type: String, default: null }, // full Cloudinary secure_url
 
   isDeityMappingRequired: { type: Boolean, default: false },
   deityMapping: { type: [{ type: mongoose.Schema.Types.ObjectId, ref: "Deity" }], default: [] },

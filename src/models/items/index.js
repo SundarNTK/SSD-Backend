@@ -27,6 +27,7 @@ const itemSchema = new mongoose.Schema({
   generalLedger: { type: mongoose.Schema.Types.ObjectId, ref: "GeneralLedger", required: true },
   salePrice: { type: Number, required: true, min: 0 },
   description: { type: String, default: "" },
+  image: { type: String, default: null }, // full Cloudinary secure_url
 
   isDeityMappingRequired: { type: Boolean, default: false },
   deityMapping: { type: [{ type: mongoose.Schema.Types.ObjectId, ref: "Deity" }], default: [] },
