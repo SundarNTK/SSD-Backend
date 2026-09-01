@@ -14,7 +14,7 @@ const escapeRegex = require("../../../common/utils/escape-regex");
 function queryHandler(req, { notDeletedFilter, searchFields = [] } = {}) {
   const page = Math.max(1, Number(req.query.page) || 1);
   const pageSize = Math.min(100, Number(req.query.pageSize) || 20);
-  const filter = notDeletedFilter ? notDeletedFilter() : {};
+  const filter = notDeletedFilter ? notDeletedFilter() : { isDeleted: false };
 
   // "" shows up when a frontend "All statuses" filter is wired to send the
   // param unconditionally rather than omitting it — Number("") is 0, which

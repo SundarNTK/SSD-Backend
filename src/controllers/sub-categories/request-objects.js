@@ -15,6 +15,7 @@ const createSchema = Joi.object({
     "string.pattern.base": "Colour must be a hex value like #942237.",
   }),
   description: Joi.string().allow("").default(""),
+  image: Joi.string().allow("").default(null),
   status: Joi.number().valid(0, 1).default(1),
 });
 
@@ -28,6 +29,7 @@ const updateSchema = Joi.object({
     "string.pattern.base": "Colour must be a hex value like #942237.",
   }),
   description: Joi.string().allow(""),
+  image: Joi.string().allow(""),
   status: Joi.number().valid(0, 1),
 });
 

@@ -12,6 +12,7 @@ const subCategorySchema = new mongoose.Schema({
   displayOrder: { type: Number, default: 0 },
   color: { type: String, required: true },
   description: { type: String, default: "" },
+  image: { type: String, default: null }, // full Cloudinary secure_url
 });
 
 subCategorySchema.plugin(auditablePlugin);

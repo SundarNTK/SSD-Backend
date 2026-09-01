@@ -82,4 +82,68 @@ const uploadCategoryImage = makeImageUpload({
   label: "Category image",
 });
 
-module.exports = { makeImageUpload, uploadAvatar, uploadCategoryImage };
+const uploadSubCategoryImage = makeImageUpload({
+  formField: "image",
+  folder: "ssd-temple/sub-categories",
+  label: "Sub-category image",
+});
+
+const uploadItemImage = makeImageUpload({
+  formField: "image",
+  folder: "ssd-temple/items",
+  label: "Item image",
+});
+
+const uploadServiceImage = makeImageUpload({
+  formField: "image",
+  folder: "ssd-temple/services",
+  label: "Service image",
+});
+
+/**
+ * Multipart fields arrive as strings. Nested arrays (categoryDetails,
+ * deityMapping) are JSON.stringified by the frontend; booleans/nulls are
+ * "true"/"false"/"null". Joi can coerce numbers from strings, but a JSON
+ * array string fails Joi.array() — parse those here so every master with
+ * an image upload can keep one Joi schema for JSON and multipart.
+ */
+function hydrateMultipartBody(req, res, next) {
+  if (!req.body || typeof req.body !== "object") return next();
+  for (const [key, value] of Object.entries(req.body)) {
+    if (typeof value !== "string") continue;
+    const trimmed = value.trim();
+    if (trimmed === "true") {
+      req.body[key] = true;
+      continue;
+    }
+    if (trimmed === "false") {
+      req.body[key] = false;
+      continue;
+    }
+    if (trimmed === "null" || trimmed === "") {
+      if (trimmed === "null") req.body[key] = null;
+      continue;
+    }
+    if (
+      (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+      (trimmed.startsWith("[") && trimmed.endsWith("]"))
+    ) {
+      try {
+        req.body[key] = JSON.parse(trimmed);
+      } catch {
+        // leave the original string; Joi will report a useful error
+      }
+    }
+  }
+  return next();
+}
+
+module.exports = {
+  makeImageUpload,
+  uploadAvatar,
+  uploadCategoryImage,
+  uploadSubCategoryImage,
+  uploadItemImage,
+  uploadServiceImage,
+  hydrateMultipartBody,
+};

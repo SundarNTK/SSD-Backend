@@ -42,6 +42,7 @@ const createSchema = Joi.object({
   name: Joi.string().trim().min(1).max(150).required(),
   tamilName: Joi.string().allow("").default(""),
   description: Joi.string().allow("").default(""),
+  image: Joi.string().allow("").default(null),
 
   isDeityMappingRequired: Joi.boolean().default(false),
   deityMapping: deityMappingField,
@@ -72,6 +73,7 @@ const updateSchema = Joi.object({
   name: Joi.string().trim().min(1).max(150),
   tamilName: Joi.string().allow(""),
   description: Joi.string().allow(""),
+  image: Joi.string().allow(""),
 
   isDeityMappingRequired: Joi.boolean(),
   deityMapping: deityMappingFieldForUpdate,
