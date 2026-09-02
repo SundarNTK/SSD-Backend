@@ -23,6 +23,16 @@
 
 const InventoryReservation = require("../../../models/inventory-reservations");
 const { Order } = require("../../../models/orders");
+const { PosOrder } = require("../../../models/pos-orders");
+
+// InventoryReservation.orderId carries no discriminator for which
+// collection minted it — Admin Booking's Order and the POS counter's own
+// PosOrder (see models/pos-orders) both place reservations the exact same
+// way (see controllers/pos/inventory-reservation.js, shared by both). So a
+// reservation's parent is looked up in both, in order; the first match
+// wins. An id can't collide between them (each is its own ObjectId space),
+// so at most one of these two lookups ever finds anything.
+const ORDER_MODELS = [Order, PosOrder];
 
 /**
  * Process one batch of expired reservations.
@@ -53,11 +63,16 @@ async function releaseExpiredReservations() {
   // reservations left, mark it cancelled too
   let ordersCancelled = 0;
   for (const orderId of affectedOrderIds) {
-    const order = await Order.findOne(
-      Order.notDeletedFilter({ _id: orderId, orderStatus: "pending" })
-    ).select("_id expiresAt");
+    let OrderModel = null;
+    for (const Model of ORDER_MODELS) {
+      const match = await Model.findOne(Model.notDeletedFilter({ _id: orderId, orderStatus: "pending" })).select("_id");
+      if (match) {
+        OrderModel = Model;
+        break;
+      }
+    }
 
-    if (!order) continue; // already confirmed, cancelled, or not found
+    if (!OrderModel) continue; // already confirmed, cancelled, or not found in either collection
 
     // Check whether any reservation for this order is still active
     const stillActive = await InventoryReservation.countDocuments({
@@ -67,7 +82,7 @@ async function releaseExpiredReservations() {
     });
 
     if (stillActive === 0) {
-      await Order.findByIdAndUpdate(orderId, { orderStatus: "cancelled" });
+      await OrderModel.findByIdAndUpdate(orderId, { orderStatus: "cancelled" });
       ordersCancelled += 1;
     }
   }
