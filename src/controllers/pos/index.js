@@ -99,17 +99,10 @@ function searchRegex(term) {
   return new RegExp(escapeRegex(term.trim()), "i");
 }
 
-/**
- * Deity-mapped offerings (Coconut Archanai, Navagraha Archanai, ...) are
- * priced and stocked per deity, not per an independently-typed quantity —
- * picking 3 deities at $5 each is a $15 line, and reserves/consumes 3 units
- * of inventory, the same as if "3" had been typed into a quantity box. A
- * line with no deities selected falls back to its own `quantity` as before
- * (a plain item like Ghee Lamp has no deity concept at all).
- */
-function effectiveQuantity(line) {
-  return line.deities && line.deities.length > 0 ? line.deities.length : line.quantity;
-}
+// Shared with controllers/pos-orders — see common/utils/effective-quantity
+// for the full rationale. Re-exported below (module.exports.effectiveQuantity)
+// so existing test imports of this module keep working unchanged.
+const { effectiveQuantity } = require("../../common/utils/effective-quantity");
 
 /**
  * Generate the next sequential order number: POS-YYYYMMDD-NNNN
@@ -1686,13 +1679,14 @@ function setPortal(portalValue) {
 }
 
 /**
- * Register the shared booking route handlers onto a given Express Router.
- * Called twice: once for the POS sub-router ("pos") and once for the Admin
- * sub-router ("admin"). Handler functions themselves just read req.posPortal
- * — the portal value is never passed as an argument, so there is one code
- * path for all surfaces and no risk of the two trees drifting.
+ * Register the shared catalogue/lookup routes onto a given Express Router.
+ * Called for both the POS sub-router and the Admin sub-router — these reads
+ * (items/services/customers/payment-modes/catalogue/summary) don't write an
+ * order/booking of their own, so both trees keep sharing this one
+ * implementation regardless of which collections each tree's own
+ * order/booking WRITE routes end up backed by (see below).
  */
-function registerBookingRoutes(r) {
+function registerCatalogueRoutes(r) {
   // ── Lookup / catalogue (read) ──────────────────────────────────────────
   r.get("/customers/search",    requirePermission("admin-booking", "view"),       searchCustomers);
   r.get("/customers/lookup",    requirePermission("admin-booking", "view"),       lookupCustomerByMobile);
@@ -1706,18 +1700,27 @@ function registerBookingRoutes(r) {
   r.get("/deities",             requirePermission("admin-booking", "view"),       listDeities);
   r.get("/nakshathirams",       requirePermission("admin-booking", "view"),       listNakshathirams);
 
-  // ── Booking flow (write) ───────────────────────────────────────────────
   r.post("/summary",            requirePermission("admin-booking", "view"),       validateBody(summarySchema),      bookingSummary);
   r.post("/recheck-lines",      requirePermission("admin-booking", "view"),       validateBody(recheckLinesSchema), recheckLines);
+}
+
+/**
+ * The Admin Panel's own order/booking/payment WRITE routes — unchanged from
+ * before the pos_orders split, still backed by the shared Order/Booking/
+ * Transaction collections (models/orders, models/bookings,
+ * models/transactions). Mounted ONLY on the Admin Booking tree now; the POS
+ * Portal tree gets its own implementation from controllers/pos-orders
+ * instead (see registerPosOrderRoutes below) — see that module's own
+ * comment for why the two trees no longer share this block.
+ */
+function registerAdminBookingWriteRoutes(r) {
   r.post("/orders",             requirePermission("admin-booking", "fullAccess"), validateBody(createOrderSchema),  createOrder);
   r.post("/orders/:id/confirm", requirePermission("admin-booking", "fullAccess"),                                   confirmOrder);
   r.get("/orders/:id/status",   requirePermission("admin-booking", "view"),                                         getOrderStatus);
 
-  // ── Transaction ledger (read) ──────────────────────────────────────────
   r.get("/bookings",            requirePermission("pos-transactions", "view"),    listBookings);
   r.get("/bookings/:id",        requirePermission("pos-transactions", "view"),    getBookingDetail);
 
-  // ── Partial payment (write) ────────────────────────────────────────────
   r.post("/bookings/:id/payments", requirePermission("pos-transactions", "fullAccess"), validateBody(recordPaymentSchema), recordBookingPayment);
 }
 
@@ -1731,13 +1734,19 @@ router.get("/health", (_req, res) =>
 );
 
 // ── POS Portal: /pos/booking/* → portal = "pos" ───────────────────────────
+// Order/booking/payment writes here are backed by pos_orders/pos_bookings/
+// pos_transactions (controllers/pos-orders), not the shared Order/Booking/
+// Transaction collections the Admin tree below still uses.
+const { registerPosOrderRoutes } = require("../pos-orders");
 const posBookingRouter = express.Router();
-registerBookingRoutes(posBookingRouter);
+registerCatalogueRoutes(posBookingRouter);
+registerPosOrderRoutes(posBookingRouter);
 router.use("/booking", setPortal("pos"), posBookingRouter);
 
 // ── Admin Panel: /pos/admin/booking/* → portal = "admin" ─────────────────
 const adminBookingRouter = express.Router();
-registerBookingRoutes(adminBookingRouter);
+registerCatalogueRoutes(adminBookingRouter);
+registerAdminBookingWriteRoutes(adminBookingRouter);
 router.use("/admin/booking", setPortal("admin"), adminBookingRouter);
 
 module.exports = router;
