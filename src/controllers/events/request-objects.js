@@ -17,6 +17,7 @@ const createSchema = Joi.object({
   name: Joi.string().trim().min(1).max(150).required(),
   tamilName: Joi.string().allow("").default(""),
   description: Joi.string().allow("").default(""),
+  image: Joi.string().allow("").default(null),
 
   category: objectId.required(),
   subCategory: objectId.allow(null).default(null),
@@ -45,6 +46,7 @@ const updateSchema = Joi.object({
   name: Joi.string().trim().min(1).max(150),
   tamilName: Joi.string().allow(""),
   description: Joi.string().allow(""),
+  image: Joi.string().allow(""),
 
   category: objectId,
   subCategory: objectId.allow(null),

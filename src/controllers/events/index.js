@@ -1,6 +1,7 @@
 const express = require("express");
 const requirePermission = require("../../common/middleware/require-permission");
 const validateBody = require("../../common/middleware/validate");
+const { uploadEventImage, hydrateMultipartBody } = require("../../common/middleware/upload");
 const makeCrudController = require("../../common/factories/crud-controller");
 const { responseHandler, exceptionHandler } = require("../../utilities/handlers");
 
@@ -81,8 +82,22 @@ const router = express.Router();
 const crud = makeCrudController(Event, { searchFields: ["name", "code", "tamilName"], populate: POPULATE });
 
 router.get("/events", requirePermission("events", "view"), crud.list);
-router.post("/events", requirePermission("events", "fullAccess"), validateBody(createSchema), create);
-router.put("/events/:id", requirePermission("events", "edit"), validateBody(updateSchema), update);
+router.post(
+  "/events",
+  requirePermission("events", "fullAccess"),
+  uploadEventImage,
+  hydrateMultipartBody,
+  validateBody(createSchema),
+  create
+);
+router.put(
+  "/events/:id",
+  requirePermission("events", "edit"),
+  uploadEventImage,
+  hydrateMultipartBody,
+  validateBody(updateSchema),
+  update
+);
 router.delete("/events/:id", requirePermission("events", "fullAccess"), crud.remove);
 
 module.exports = router;
