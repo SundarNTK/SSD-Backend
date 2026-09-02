@@ -23,6 +23,7 @@ const eventSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
   tamilName: { type: String, default: "" },
   description: { type: String, default: "" },
+  image: { type: String, default: null }, // full Cloudinary secure_url
 
   category: { type: mongoose.Schema.Types.ObjectId, ref: "Category", required: true },
   subCategory: { type: mongoose.Schema.Types.ObjectId, ref: "SubCategory", default: null },

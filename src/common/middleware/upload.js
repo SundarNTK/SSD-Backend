@@ -100,6 +100,12 @@ const uploadServiceImage = makeImageUpload({
   label: "Service image",
 });
 
+const uploadEventImage = makeImageUpload({
+  formField: "image",
+  folder: "ssd-temple/events",
+  label: "Event image",
+});
+
 /**
  * Multipart fields arrive as strings. Nested arrays (categoryDetails,
  * deityMapping) are JSON.stringified by the frontend; booleans/nulls are
@@ -145,5 +151,6 @@ module.exports = {
   uploadSubCategoryImage,
   uploadItemImage,
   uploadServiceImage,
+  uploadEventImage,
   hydrateMultipartBody,
 };
