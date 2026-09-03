@@ -32,7 +32,9 @@ const serviceSchema = new mongoose.Schema({
 
   isDeityMappingRequired: { type: Boolean, default: false },
   deityMapping: { type: [{ type: mongoose.Schema.Types.ObjectId, ref: "Deity" }], default: [] },
-  printingGroup: { type: mongoose.Schema.Types.ObjectId, ref: "PrintingGroup", required: true },
+  // Required when isDeityMappingRequired is false. When mapping is on, the
+  // print group comes from the selected deity (Deity.printingGroup) instead.
+  printingGroup: { type: mongoose.Schema.Types.ObjectId, ref: "PrintingGroup", default: null },
 
   categoryDetails: { type: [categoryDetailSchema], default: [] },
 
