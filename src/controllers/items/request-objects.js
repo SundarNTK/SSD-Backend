@@ -36,6 +36,23 @@ const deityMappingFieldForUpdate = Joi.array()
     otherwise: Joi.array(),
   });
 
+// Printing group is entered on the item only when deity mapping is off.
+// When mapping is on, the selected deity's Deity Master printing group is
+// used instead — any value the client still sends is discarded.
+const printingGroupWhenDeityMapped = Joi.any().custom(() => null);
+
+const printingGroupField = Joi.when("isDeityMappingRequired", {
+  is: true,
+  then: printingGroupWhenDeityMapped.default(null),
+  otherwise: objectId.required(),
+});
+
+const printingGroupFieldForUpdate = Joi.when("isDeityMappingRequired", {
+  is: true,
+  then: printingGroupWhenDeityMapped,
+  otherwise: objectId,
+});
+
 const createSchema = Joi.object({
   code: Joi.string().trim().min(1).max(30).required(),
   name: Joi.string().trim().min(1).max(150).required(),
@@ -47,7 +64,7 @@ const createSchema = Joi.object({
 
   isDeityMappingRequired: Joi.boolean().default(false),
   deityMapping: deityMappingField,
-  printingGroup: objectId.required(),
+  printingGroup: printingGroupField,
 
   categoryDetails: Joi.array().items(categoryDetailEntry).default([]),
 
@@ -81,7 +98,7 @@ const updateSchema = Joi.object({
 
   isDeityMappingRequired: Joi.boolean(),
   deityMapping: deityMappingFieldForUpdate,
-  printingGroup: objectId,
+  printingGroup: printingGroupFieldForUpdate,
 
   categoryDetails: Joi.array().items(categoryDetailEntry),
 
