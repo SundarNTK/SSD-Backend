@@ -483,13 +483,19 @@ async function decorateServices(services) {
 
 /**
  * GET /pos/booking/payment-modes
- * Returns all active payment modes. The frontend shows only Cash for now
- * but this endpoint returns all so the screen can expand later.
+ * Returns every active, publicly-offerable payment mode — `publicAvailability`
+ * is what actually gates this (see models/payment-modes and
+ * seed/seedPaymentModes.js): DBS is seeded with publicAvailability: false
+ * (it's a back-office bank-transfer record, never a counter payment option)
+ * and is excluded here for exactly that reason, not hardcoded by name.
+ * Cash/PayNow/NETS are all publicAvailability: true; the POS counter's own
+ * PaymentModeBoxes further decides which of those it can actually process
+ * yet (Cash + PayNow live, NETS still "Coming soon").
  */
 async function listPaymentModes(req, res) {
   try {
     const modes = await PaymentMode.find(
-      PaymentMode.notDeletedFilter({ status: 1 })
+      PaymentMode.notDeletedFilter({ status: 1, publicAvailability: true })
     )
       .select("name description")
       .sort({ name: 1 });
