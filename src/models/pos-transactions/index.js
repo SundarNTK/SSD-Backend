@@ -13,13 +13,24 @@ const { auditablePlugin } = require("../../common/plugins/auditable");
  * Unlike the shared Transaction model (which only ever needed
  * paid|pending|refunded because Cash was the only mode, settled
  * synchronously), this ledger has a genuine async pending -> paid/failed
- * lifecycle for PayNow/NETS: a row is written PENDING before redirecting to
- * the gateway/terminal, and flipped by the shared confirmation dispatcher
- * (controllers/payments/dispatch.js) once the real confirmation lands —
- * never re-created. `gatewayReference` is what makes that flip idempotent:
- * whatever the bank/terminal hands back (DBS txnRefId, a NETS terminal
- * reference) so a duplicate callback for an already-settled row is
- * recognizable and safely ignored rather than double-counted.
+ * lifecycle for PayNow/NETS: a row is written PENDING, with its amount
+ * already fixed, the moment a QR is generated (see controllers/payments/
+ * paynow/generate-qr) — never re-created, and never re-priced later. The
+ * confirmation step (a real DBS ICN, or an admin's manual confirm — see
+ * controllers/pos-order-confirmation) only ever flips this SAME row from
+ * pending to paid; it does not get to choose a different amount, the same
+ * way a Cash cashier can't "confirm" a receipt for more than what was rung
+ * up. `gatewayReference` is what makes that flip idempotent: whatever the
+ * bank/terminal hands back (DBS txnRefId, a NETS terminal reference) so a
+ * duplicate callback for an already-settled row is recognizable and safely
+ * ignored rather than double-counted.
+ *
+ * `bookingId` is nullable — a PENDING row for an order's FIRST payment is
+ * written before any PosBooking exists yet (the booking is only created
+ * once that payment is actually confirmed, same as Cash's own confirm-time
+ * write), and gets backfilled onto this same row at that point. A PENDING
+ * row for a balance top-up on an already-confirmed booking has it from the
+ * start.
  */
 
 const POS_TRANSACTION_STATUSES = ["pending", "paid", "failed", "cancelled", "expired", "refunded"];
@@ -27,7 +38,7 @@ const POS_TRANSACTION_STATUSES = ["pending", "paid", "failed", "cancelled", "exp
 const posTransactionSchema = new mongoose.Schema({
   receiptNo: { type: String, required: true },
 
-  bookingId: { type: mongoose.Schema.Types.ObjectId, ref: "PosBooking", required: true },
+  bookingId: { type: mongoose.Schema.Types.ObjectId, ref: "PosBooking", default: null },
   orderId: { type: mongoose.Schema.Types.ObjectId, ref: "PosOrder", required: true },
   customer: { type: mongoose.Schema.Types.ObjectId, ref: "Customer", required: true },
 
@@ -43,6 +54,15 @@ const posTransactionSchema = new mongoose.Schema({
   // for Cash (nothing to correlate against). The one field a duplicate
   // callback is matched against before deciding "already processed."
   gatewayReference: { type: mongoose.Schema.Types.Mixed, default: null },
+
+  // Only meaningful while paymentStatus is "pending" — a QR/terminal
+  // attempt that's never confirmed by this time can no longer be confirmed
+  // at all (see controllers/pos-orders' confirmPosPayment and
+  // controllers/pos-order-confirmation, both of which check this before
+  // acting on a pending row) and needs a fresh one generated instead. Null
+  // for Cash (settled synchronously, nothing to expire) and for any row
+  // already paid/failed/cancelled.
+  expiresAt: { type: Date, default: null },
 
   transactionDate: { type: Date, required: true },
   processedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },

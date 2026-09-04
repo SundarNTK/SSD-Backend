@@ -51,6 +51,7 @@ const {
   cancelReservations,
 } = require("../pos/inventory-reservation");
 const { effectiveQuantity } = require("../../common/utils/effective-quantity");
+const { loadPosVisibleHierarchy, offeringInPosHierarchy } = require("../../common/utils/pos-catalogue-visibility");
 
 const { createOrderSchema, confirmOrderSchema, recordPaymentSchema } = require("./request-objects");
 
@@ -99,6 +100,26 @@ function derivePaymentStatus(amountPaid, grandTotal) {
   return "pending";
 }
 
+/**
+ * How much is still owed on this order/booking, regardless of whether it's
+ * still a pending PosOrder (first payment) or an already-confirmed
+ * PosBooking with some balance left (a top-up) — the one place that
+ * question is answered, used by both createPendingPayment() below and
+ * controllers/payments/paynow/generate-qr.
+ */
+async function resolveOutstandingBalance(order) {
+  if (order.orderStatus !== "confirmed") {
+    return { booking: null, balance: order.grandTotal };
+  }
+  const booking = await PosBooking.findById(order.bookingId);
+  if (!booking) throw "Booking record not found for this order.";
+  const transactions = await PosTransaction.find(
+    PosTransaction.notDeletedFilter({ bookingId: booking._id })
+  ).select("amount paymentStatus");
+  const paid = sumPaidAmount(transactions);
+  return { booking, balance: +(booking.grandTotal - paid).toFixed(2) };
+}
+
 async function resolveGstRate(generalLedgerId) {
   if (!generalLedgerId) return 0;
   try {
@@ -132,6 +153,7 @@ async function createOrder(req, res) {
     if (error) throw error.details[0].message;
 
     const { customerId, lines, paymentModeId, paidAmount } = value;
+    const hierarchy = await loadPosVisibleHierarchy();
 
     const customer = await Customer.findOne(
       Customer.notDeletedFilter({ _id: customerId, status: 1 })
@@ -156,7 +178,9 @@ async function createOrder(req, res) {
         const item = await Item.findOne(
           Item.notDeletedFilter({ _id: refId, status: 1, posAvailability: true })
         ).populate("generalLedger", "gstType");
-        if (!item) throw `An item in the cart is no longer available.`;
+        if (!item || !offeringInPosHierarchy(item, hierarchy.categoryIds, hierarchy.subCategoryIds)) {
+          throw `An item in the cart is no longer available.`;
+        }
         name = item.name;
         code = item.code;
         unitPrice = item.salePrice;
@@ -165,7 +189,9 @@ async function createOrder(req, res) {
         const svc = await Service.findOne(
           Service.notDeletedFilter({ _id: refId, status: 1, isPosAvailable: true })
         ).populate("generalLedger", "gstType");
-        if (!svc) throw `A service in the cart is no longer available.`;
+        if (!svc || !offeringInPosHierarchy(svc, hierarchy.categoryIds, hierarchy.subCategoryIds)) {
+          throw `A service in the cart is no longer available.`;
+        }
         name = svc.name;
         code = svc.code;
         unitPrice = svc.salePrice ?? 0;
@@ -374,6 +400,37 @@ async function writePosBookingFromOrder(order, paidAmount, paymentOverride = {})
 }
 
 /**
+ * Shapes an already-confirmed booking for a response — used by both
+ * confirmOrder's idempotent re-confirm branch and getOrderStatus's
+ * confirmed branch. Both used to spread `booking.toObject()` and stop
+ * there, which meant neither ever carried `amountPaid`/`balanceAmount` —
+ * fine for a `paid` booking (the frontend never needed those fields for
+ * that case), but a real bug for a `partial` one: the polling flow for a
+ * partially-paid PayNow first payment calls this exact endpoint and reads
+ * `booking.balanceAmount` to build its success message, and it was always
+ * `undefined` there — throwing inside PaynowQrModal's poll tick, which
+ * silently swallowed it and retried forever instead of ever showing
+ * success. Also picks `receiptNo` off the OLDEST transaction (the one
+ * printed at confirm time), not an arbitrary unsorted `findOne` — the same
+ * convention listBookings already uses.
+ */
+async function buildConfirmedOrderResponse(order, booking) {
+  const transactions = await PosTransaction.find(PosTransaction.notDeletedFilter({ bookingId: booking._id }))
+    .select("receiptNo amount paymentStatus transactionDate")
+    .sort({ transactionDate: 1 });
+  const amountPaid = sumPaidAmount(transactions);
+  return {
+    ...booking.toObject(),
+    receiptNo: transactions[0]?.receiptNo ?? null,
+    orderNumber: order.orderNumber,
+    referenceId: order.referenceId,
+    status: "confirmed",
+    amountPaid,
+    balanceAmount: +(booking.grandTotal - amountPaid).toFixed(2),
+  };
+}
+
+/**
  * POST /pos/booking/orders/:id/confirm
  * Idempotent re-confirm, same shape as controllers/pos/index.js's
  * confirmOrder.
@@ -393,23 +450,14 @@ async function confirmOrder(req, res) {
 
     if (!order) throw "Order not found.";
     if (order.orderStatus === "confirmed") {
-      const [existing, existingTxn] = await Promise.all([
-        PosBooking.findById(order.bookingId)
-          .populate("customer", "customerCode name email mobileNumber")
-          .populate("lines.deities", "name")
-          .populate("bookedBy", "name email"),
-        PosTransaction.findOne(PosTransaction.notDeletedFilter({ orderId: order._id })),
-      ]);
+      const existing = await PosBooking.findById(order.bookingId)
+        .populate("customer", "customerCode name email mobileNumber")
+        .populate("lines.deities", "name")
+        .populate("bookedBy", "name email");
       if (!existing) throw "Booking record not found for this confirmed order.";
       return responseHandler({
         res,
-        response: {
-          ...existing.toObject(),
-          receiptNo: existingTxn?.receiptNo ?? null,
-          orderNumber: order.orderNumber,
-          referenceId: order.referenceId,
-          status: "confirmed",
-        },
+        response: await buildConfirmedOrderResponse(order, existing),
         successMessage: "Booking already confirmed.",
       });
     }
@@ -452,24 +500,12 @@ async function getOrderStatus(req, res) {
     if (!order) throw "Order not found.";
 
     if (order.orderStatus === "confirmed") {
-      const [booking, txn] = await Promise.all([
-        PosBooking.findById(order.bookingId)
-          .populate("customer", "customerCode name email mobileNumber")
-          .populate("lines.deities", "name")
-          .populate("bookedBy", "name email"),
-        PosTransaction.findOne(PosTransaction.notDeletedFilter({ orderId: order._id })),
-      ]);
+      const booking = await PosBooking.findById(order.bookingId)
+        .populate("customer", "customerCode name email mobileNumber")
+        .populate("lines.deities", "name")
+        .populate("bookedBy", "name email");
       if (!booking) throw "Booking record not found for this confirmed order.";
-      return responseHandler({
-        res,
-        response: {
-          ...booking.toObject(),
-          receiptNo: txn?.receiptNo ?? null,
-          orderNumber: order.orderNumber,
-          referenceId: order.referenceId,
-          status: "confirmed",
-        },
-      });
+      return responseHandler({ res, response: await buildConfirmedOrderResponse(order, booking) });
     }
 
     if (order.orderStatus === "cancelled") {
@@ -591,7 +627,12 @@ async function getBookingDetail(req, res) {
         .populate("paymentMode", "name")
         .populate("lines.deities", "name")
         .populate("bookedBy", "name email"),
-      PosTransaction.find(PosTransaction.notDeletedFilter({ bookingId: id }))
+      // paymentStatus: "paid" only — this is the receipt's payment history,
+      // and a pending/cancelled/failed/expired attempt (e.g. a QR that was
+      // scanned but never paid, or superseded by a later retry) isn't a
+      // payment that was actually collected. Matches sumPaidAmount below,
+      // which already only counts "paid" toward amountPaid.
+      PosTransaction.find(PosTransaction.notDeletedFilter({ bookingId: id, paymentStatus: "paid" }))
         .select("receiptNo amount paymentStatus paymentModeName transactionDate processedBy")
         .populate("processedBy", "name email")
         .sort({ transactionDate: 1 }),
@@ -705,24 +746,149 @@ async function recordBookingPayment(req, res) {
   }
 }
 
-// ─── shared confirmation dispatcher entrypoint (Phase 2/3 caller) ───────
+// ─── pending payment lifecycle (PayNow/NETS — QR generated, not yet paid) ─
+
+const PAYMENT_ATTEMPT_TTL_MS = 15 * 60 * 1000; // 15 minutes to scan & pay one QR
+
+/**
+ * Called by controllers/payments/paynow/generate-qr BEFORE it builds the QR
+ * image — this is what fixes the amount a QR is generated for, the same
+ * moment Cash's own amount gets fixed (createOrder's `paidAmount`). Nothing
+ * confirms this payment — it only ever exists as a PENDING PosTransaction
+ * until a real webhook or a manual admin confirm (controllers/pos-order-
+ * confirmation) flips this SAME row to paid. Neither of those steps gets to
+ * choose a different amount.
+ *
+ * Worst case #1 this guards against: a customer/cashier generates a second
+ * QR (retry, changed their mind) while an earlier one for the same order is
+ * still outstanding — the earlier PENDING row is cancelled first, so there
+ * is never more than one active pending payment per order at a time and a
+ * stray old QR can't later get confirmed against a since-superseded amount.
+ *
+ * `paymentMode`/`paymentModeName` default to the order's own, but a caller
+ * SHOULD pass the mode it's actually generating a QR/terminal prompt for
+ * explicitly — an installment doesn't have to match how the order was
+ * originally paid (booked on Cash, balance topped up via PayNow is exactly
+ * the case recordBookingPayment/applyBookingPayment already support for
+ * Cash top-ups; PayNow's own generate-qr must do the same, or a PayNow
+ * top-up on a Cash-booked order silently gets tagged "Cash" — which is not
+ * just a display bug, it also makes the POS Order Confirmation screen's
+ * own Cash-exclusion filter hide it, since Cash never needs manual
+ * confirmation).
+ *
+ * @returns {Promise<{ order: PosOrder, transaction: PosTransaction }>}
+ */
+async function createPendingPayment({ referenceId, amount: requestedAmount, paymentMode, paymentModeName, processedBy }) {
+  const order = await PosOrder.findOne(PosOrder.notDeletedFilter({ referenceId }));
+  if (!order) throw "No order found for this reference.";
+  if (order.orderStatus === "cancelled") throw "This order has been cancelled and can no longer be paid.";
+
+  const { balance } = await resolveOutstandingBalance(order);
+  if (balance <= 0.005) throw "This order is already fully paid.";
+  if (requestedAmount != null && requestedAmount > balance + 0.005) {
+    throw `Payment amount cannot exceed the outstanding balance of ${balance.toFixed(2)}.`;
+  }
+  const amount = requestedAmount != null ? requestedAmount : balance;
+
+  await PosTransaction.updateMany(
+    { orderId: order._id, paymentStatus: "pending" },
+    { $set: { paymentStatus: "cancelled" } }
+  );
+
+  const receiptNo = await generateReceiptNumber();
+  const transaction = await PosTransaction.create({
+    receiptNo,
+    orderId: order._id,
+    bookingId: order.bookingId ?? null,
+    customer: order.customer,
+    paymentMode: paymentMode ?? order.paymentMode,
+    paymentModeName: paymentModeName ?? order.paymentModeName,
+    amount,
+    paymentStatus: "pending",
+    expiresAt: new Date(Date.now() + PAYMENT_ATTEMPT_TTL_MS),
+    transactionDate: new Date(),
+    processedBy: processedBy ?? null,
+    createdBy: processedBy ?? null,
+  });
+
+  return { order, transaction };
+}
+
+/**
+ * Writes the PosBooking for an order's first payment when that payment's
+ * PosTransaction ALREADY exists (created pending by createPendingPayment,
+ * now claimed paid by confirmPosPayment below) — unlike
+ * writePosBookingFromOrder (Cash's own synchronous path), this never
+ * creates a transaction itself, only the booking, then links the two.
+ */
+async function writePosBookingOnly(order, amountNow, transaction) {
+  const bookingNumber = await generateBookingNumber();
+  const now = new Date();
+  const bookingPaymentStatus = derivePaymentStatus(amountNow, order.grandTotal);
+
+  let booking;
+  try {
+    booking = await PosBooking.create({
+      bookingNumber,
+      orderId: order._id,
+      customer: order.customer,
+      lines: order.lines,
+      subtotal: order.subtotal,
+      gstAmount: order.gstAmount,
+      grandTotal: order.grandTotal,
+      paymentMode: transaction.paymentMode,
+      paymentModeName: transaction.paymentModeName,
+      paymentStatus: bookingPaymentStatus,
+      bookingStatus: "confirmed",
+      bookedBy: order.bookedBy,
+      entity: order.entity,
+      bookedAt: now,
+      createdBy: order.bookedBy ?? null,
+    });
+    await PosTransaction.findByIdAndUpdate(transaction._id, { bookingId: booking._id });
+    await PosOrder.findByIdAndUpdate(order._id, { orderStatus: "confirmed", bookingId: booking._id });
+  } catch (writeError) {
+    // The transaction itself is left "paid" — best-effort cleanup here only
+    // removes the half-written booking, so a retry of THIS function (not a
+    // new payment) can pick the same already-paid transaction back up
+    // rather than losing track of money already confirmed as received.
+    if (booking) await PosBooking.deleteOne({ _id: booking._id }).catch(() => {});
+    throw writeError;
+  }
+
+  await consumeReservations(order._id, order.lines, order.bookedBy, bookingNumber);
+  return booking;
+}
+
+// ─── shared confirmation dispatcher entrypoint ──────────────────────────
 
 /**
  * Registered against the "POS" prefix in controllers/payments/dispatch.js.
- * Called once a PayNow/NETS confirmation actually lands — never at QR
- * generation or terminal-initiation time. Idempotent: a duplicate callback
- * carrying a `gatewayReference` already recorded on a "paid" row is
- * recognized and returned as a no-op instead of double-processing.
+ * Called once a PayNow/NETS confirmation actually lands — a real DBS ICN,
+ * or an admin's manual confirm (controllers/pos-order-confirmation) —
+ * never at QR generation time. Confirms the SAME PENDING PosTransaction
+ * createPendingPayment() already created; does not create a new one and
+ * does not accept a different amount than what that row already has.
+ *
+ * Idempotent two ways (worst case #2 — duplicate/racing confirmations):
+ *   - A duplicate callback carrying a `gatewayReference` already recorded
+ *     on a "paid" row is recognized and returned as a no-op.
+ *   - The actual pending -> paid transition is one atomic
+ *     `findOneAndUpdate` guarded on `paymentStatus: "pending"` — if two
+ *     confirmations for the same pending row race (e.g. a real webhook and
+ *     a manual admin click at nearly the same moment), only the one that
+ *     wins the atomic update proceeds to write the booking; the loser sees
+ *     its update match nothing and reports alreadyProcessed instead of
+ *     double-confirming.
  *
  * @param {string} referenceId
- * @param {{ amount?: number, paymentMode?: ObjectId, paymentModeName?: string,
- *           gatewayReference?: string, processedBy?: ObjectId }} details
+ * @param {{ amount?: number, gatewayReference?: string, processedBy?: ObjectId }} details
+ *   `amount`, if given (e.g. a real gateway's own reported amount), is only
+ *   ever a cross-check against the pending transaction's own fixed amount —
+ *   never a value that changes what gets confirmed.
  */
 async function confirmPosPayment(referenceId, details = {}) {
-  const order = await PosOrder.findOne(PosOrder.notDeletedFilter({ referenceId })).populate(
-    "customer",
-    "customerCode name email mobileNumber"
-  );
+  const order = await PosOrder.findOne(PosOrder.notDeletedFilter({ referenceId }));
   if (!order) throw `No POS order found for reference "${referenceId}".`;
 
   if (details.gatewayReference) {
@@ -736,41 +902,64 @@ async function confirmPosPayment(referenceId, details = {}) {
     if (already) return { alreadyProcessed: true, transactionId: already._id };
   }
 
+  const pending = await PosTransaction.findOne(
+    PosTransaction.notDeletedFilter({ orderId: order._id, paymentStatus: "pending" })
+  );
+  if (!pending) throw `No pending payment found for reference "${referenceId}" — it may already be confirmed, or the QR needs to be regenerated.`;
+
+  if (pending.expiresAt && pending.expiresAt < new Date()) {
+    await PosTransaction.findByIdAndUpdate(pending._id, { paymentStatus: "expired" });
+    throw `The payment window for reference "${referenceId}" has expired — generate a new QR and try again.`;
+  }
+
+  if (details.amount != null && Math.abs(details.amount - pending.amount) > 0.005) {
+    throw `Confirmation amount ${details.amount.toFixed(2)} does not match the expected amount of ${pending.amount.toFixed(2)} for this payment.`;
+  }
+
+  // Atomic claim — see the module comment above for why this specific write
+  // (not a read-then-write) is what makes a race between two confirmations
+  // for the same pending row safe.
+  const claimed = await PosTransaction.findOneAndUpdate(
+    { _id: pending._id, paymentStatus: "pending" },
+    { $set: { paymentStatus: "paid", gatewayReference: details.gatewayReference ?? null, processedBy: details.processedBy ?? null } },
+    { new: true }
+  );
+  if (!claimed) return { alreadyProcessed: true, transactionId: pending._id };
+
   // First payment for this order — nothing confirmed yet.
   if (order.orderStatus !== "confirmed") {
-    if (order.orderStatus === "cancelled") throw `Order "${referenceId}" was cancelled and cannot be confirmed.`;
-    if (new Date() > order.expiresAt) {
-      await cancelReservations(order._id);
-      await PosOrder.findByIdAndUpdate(order._id, { orderStatus: "cancelled" });
-      throw `Order "${referenceId}" expired before payment was confirmed.`;
-    }
-    const confirmed = await writePosBookingFromOrder(order, details.amount ?? order.grandTotal, {
-      paymentMode: details.paymentMode,
-      paymentModeName: details.paymentModeName,
-      gatewayReference: details.gatewayReference,
-      processedBy: details.processedBy,
-    });
-    return { alreadyProcessed: false, ...confirmed };
+    const booking = await writePosBookingOnly(order, claimed.amount, claimed);
+    return {
+      alreadyProcessed: false,
+      _id: booking._id,
+      bookingNumber: booking.bookingNumber,
+      referenceId: order.referenceId,
+      receiptNo: claimed.receiptNo,
+      paymentStatus: booking.paymentStatus,
+      amountPaid: claimed.amount,
+      balanceAmount: +(booking.grandTotal - claimed.amount).toFixed(2),
+    };
   }
 
   // Booking already confirmed — this settlement is a balance top-up.
   const booking = await PosBooking.findById(order.bookingId);
   if (!booking) throw `Booking record not found for confirmed order "${referenceId}".`;
-  const { transaction, amountPaid, balanceAmount } = await applyBookingPayment(booking, details.amount, {
-    paymentMode: details.paymentMode,
-    paymentModeName: details.paymentModeName,
-    gatewayReference: details.gatewayReference,
-    processedBy: details.processedBy,
-  });
+  const paidTransactions = await PosTransaction.find(
+    PosTransaction.notDeletedFilter({ bookingId: booking._id })
+  ).select("amount paymentStatus");
+  const amountPaid = sumPaidAmount(paidTransactions);
+  booking.paymentStatus = derivePaymentStatus(amountPaid, booking.grandTotal);
+  await booking.save();
+
   return {
     alreadyProcessed: false,
     _id: booking._id,
     bookingNumber: booking.bookingNumber,
     referenceId: order.referenceId,
-    receiptNo: transaction.receiptNo,
+    receiptNo: claimed.receiptNo,
     paymentStatus: booking.paymentStatus,
     amountPaid,
-    balanceAmount,
+    balanceAmount: +(booking.grandTotal - amountPaid).toFixed(2),
   };
 }
 
@@ -797,10 +986,14 @@ function registerPosOrderRoutes(r) {
 module.exports = {
   registerPosOrderRoutes,
   confirmPosPayment,
+  // used by controllers/payments/paynow/generate-qr
+  createPendingPayment,
+  resolveOutstandingBalance,
   // exposed for unit testing, same pattern controllers/pos/index.js uses
   createOrder,
   confirmOrder,
   getOrderStatus,
   recordBookingPayment,
   writePosBookingFromOrder,
+  writePosBookingOnly,
 };

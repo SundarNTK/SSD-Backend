@@ -9,7 +9,7 @@ const { exceptionHandler } = require("../../utilities/handlers");
  * app moves to AWS, so local disk was never a real option here.
  */
 const ALLOWED_MIME = new Set(["image/jpeg", "image/png", "image/webp"]);
-const MAX_BYTES = 2 * 1024 * 1024; // 2 MB
+const MAX_BYTES = 100 * 1024; // 100 KB — every master's image upload shares this one cap
 
 const uploader = multer({
   storage: multer.memoryStorage(),
@@ -52,7 +52,7 @@ function makeImageUpload({ formField, targetField = formField, folder, label = "
   return function uploadImage(req, res, next) {
     uploader.single(formField)(req, res, async (err) => {
       if (err) {
-        const message = err.code === "LIMIT_FILE_SIZE" ? `${label} must be 2 MB or smaller.` : err.message;
+        const message = err.code === "LIMIT_FILE_SIZE" ? `${label} must be 100 KB or smaller.` : err.message;
         return exceptionHandler({ res, error: message, statusCode: 422 });
       }
       if (!req.file) return next();

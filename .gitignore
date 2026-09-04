@@ -5,3 +5,15 @@ dist/
 # One-off local backups (e.g. from src/seed/reseedCatalogue.js) — can
 # contain customer PII pulled from Order/Booking snapshots, never committed.
 backups/
+
+# DBS PayNow key material (public/Paynowsdk/dbs-paynow-*.asc) — currently
+# HEB's own borrowed keys (their private key included), used temporarily so
+# the PayNow QR/ICN code path can be built and tested before SSD's own DBS
+# onboarding completes (see docs/paynow-integration.md). HEB's own repo
+# tracks these in git, but committing another client's live private key
+# material into SSD's separate repo is a different, worse exposure — so
+# unlike HEB's repo, these stay local-only here until swapped for SSD's own
+# DBS-issued keys. The SDK jar/lib and PayNow.png are NOT secret and ARE
+# tracked normally.
+public/Paynowsdk/dbs-paynow-*.asc
+public/Paynowsdk/sample-response.asc
