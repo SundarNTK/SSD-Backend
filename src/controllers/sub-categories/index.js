@@ -5,6 +5,9 @@ const { uploadSubCategoryImage, hydrateMultipartBody } = require("../../common/m
 const makeCrudController = require("../../common/factories/crud-controller");
 
 const SubCategory = require("../../models/sub-categories");
+const Item = require("../../models/items");
+const Service = require("../../models/services");
+const Event = require("../../models/events");
 const { createSchema, updateSchema } = require("./request-objects");
 
 // Mounted at /masters — see routes/index.js (authGuard/adminOnly now applied
@@ -14,6 +17,11 @@ const router = express.Router();
 const crud = makeCrudController(SubCategory, {
   searchFields: ["name", "tamilName", "code"],
   populate: [{ path: "category", select: "name" }],
+  referencedBy: [
+    { model: Item, field: "categoryDetails.subCategory", label: "Item" },
+    { model: Service, field: "categoryDetails.subCategory", label: "Service" },
+    { model: Event, field: "subCategory", label: "Event" },
+  ],
 });
 
 router.get("/sub-categories", requirePermission("sub-categories", "view"), crud.list);

@@ -6,6 +6,8 @@ const { responseHandler, exceptionHandler } = require("../../utilities/handlers"
 
 const GeneralLedger = require("../../models/general-ledgers");
 const GlGroup = require("../../models/gl-groups");
+const Item = require("../../models/items");
+const Service = require("../../models/services");
 const { createSchema, updateSchema } = require("./request-objects");
 
 const POPULATE = [
@@ -80,7 +82,14 @@ async function update(req, res) {
 // once for the whole /masters group there, not per master).
 const router = express.Router();
 
-const crud = makeCrudController(GeneralLedger, { searchFields: ["name", "code"], populate: POPULATE });
+const crud = makeCrudController(GeneralLedger, {
+  searchFields: ["name", "code"],
+  populate: POPULATE,
+  referencedBy: [
+    { model: Item, field: "generalLedger", label: "Item" },
+    { model: Service, field: "generalLedger", label: "Service" },
+  ],
+});
 
 router.get("/general-ledgers", requirePermission("general-ledgers", "view"), crud.list);
 router.post("/general-ledgers", requirePermission("general-ledgers", "fullAccess"), validateBody(createSchema), create);

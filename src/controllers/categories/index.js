@@ -5,13 +5,25 @@ const { uploadCategoryImage, hydrateMultipartBody } = require("../../common/midd
 const makeCrudController = require("../../common/factories/crud-controller");
 
 const Category = require("../../models/categories");
+const SubCategory = require("../../models/sub-categories");
+const Item = require("../../models/items");
+const Service = require("../../models/services");
+const Event = require("../../models/events");
 const { createSchema, updateSchema } = require("./request-objects");
 
 // Mounted at /masters — see routes/index.js (authGuard/adminOnly now applied
 // once for the whole /masters group there, not per master).
 const router = express.Router();
 
-const crud = makeCrudController(Category, { searchFields: ["name", "tamilName", "code"] });
+const crud = makeCrudController(Category, {
+  searchFields: ["name", "tamilName", "code"],
+  referencedBy: [
+    { model: SubCategory, field: "category", label: "Sub Category" },
+    { model: Item, field: "categoryDetails.category", label: "Item" },
+    { model: Service, field: "categoryDetails.category", label: "Service" },
+    { model: Event, field: "category", label: "Event" },
+  ],
+});
 
 router.get("/categories", requirePermission("categories", "view"), crud.list);
 // uploadCategoryImage runs before validateBody on the write routes, same

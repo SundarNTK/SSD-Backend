@@ -1,13 +1,21 @@
 const { responseHandler, exceptionHandler } = require("../../utilities/handlers");
 const escapeRegex = require("../utils/escape-regex");
+const { findBlockingReference } = require("../utils/reference-guard");
 
 /**
  * Every master (Email Template, Email Template Mapping today; Role, Entity,
  * and the rest from Day 2 onward) needs the same four operations —
  * paginated/search list, create, update, soft-delete. Generate them once
  * per model instead of hand-writing the same four functions per master.
+ *
+ * `referencedBy` — [{ model, field, label }] — is the "don't delete a
+ * master that's still mapped elsewhere" guard: before soft-deleting,
+ * remove() checks each entry for a still-active (non-deleted) record whose
+ * `field` points at this one, and refuses the delete if it finds one. Empty
+ * by default; a caller only needs to pass it for masters something else
+ * actually references (see reference-guard.js for the matching rules).
  */
-function makeCrudController(Model, { searchFields = [], populate = [] } = {}) {
+function makeCrudController(Model, { searchFields = [], populate = [], referencedBy = [] } = {}) {
   async function list(req, res) {
     try {
       const page = Math.max(1, Number(req.query.page) || 1);
@@ -65,6 +73,12 @@ function makeCrudController(Model, { searchFields = [], populate = [] } = {}) {
     try {
       const doc = await Model.findOne(Model.notDeletedFilter({ _id: req.params.id }));
       if (!doc) throw "Record not found.";
+
+      const blockingMessage = await findBlockingReference(referencedBy, doc._id);
+      if (blockingMessage) {
+        return exceptionHandler({ res, error: blockingMessage, statusCode: 409 });
+      }
+
       await doc.softDelete(req.auth?.userId);
       return responseHandler({ res, successMessage: "Deactivated successfully." });
     } catch (error) {

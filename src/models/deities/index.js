@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 const { auditablePlugin, activeUniqueIndexOptions } = require("../../common/plugins/auditable");
 
 const deitySchema = new mongoose.Schema({
+  code: { type: String, required: true, trim: true, uppercase: true },
   name: { type: String, required: true, trim: true },
   tamilName: { type: String, default: "" },
   printingGroup: { type: mongoose.Schema.Types.ObjectId, ref: "PrintingGroup", required: true },
@@ -9,6 +10,7 @@ const deitySchema = new mongoose.Schema({
 
 deitySchema.plugin(auditablePlugin);
 
+deitySchema.index({ code: 1 }, activeUniqueIndexOptions({ collation: { locale: "en", strength: 2 } }));
 deitySchema.index({ name: 1 }, activeUniqueIndexOptions({ collation: { locale: "en", strength: 2 } }));
 deitySchema.index({ status: 1, createdAt: -1 });
 // Mongoose only auto-indexes _id — a `ref` field gets nothing for free.

@@ -4,6 +4,7 @@ const validateBody = require("../../common/middleware/validate");
 const makeCrudController = require("../../common/factories/crud-controller");
 
 const EmailTemplate = require("../../models/email-templates");
+const EmailTemplateMapping = require("../../models/email-template-mappings");
 const { createSchema, updateSchema } = require("./request-objects");
 
 // These routes decide what the platform emails people, so they need both
@@ -12,7 +13,10 @@ const { createSchema, updateSchema } = require("./request-objects");
 // each router used to apply its own copy).
 const router = express.Router();
 
-const controller = makeCrudController(EmailTemplate, { searchFields: ["name", "subject"] });
+const controller = makeCrudController(EmailTemplate, {
+  searchFields: ["name", "subject"],
+  referencedBy: [{ model: EmailTemplateMapping, field: "template", label: "Email Template Mapping" }],
+});
 router.get("/email-templates", requirePermission("email-templates", "view"), controller.list);
 router.post(
   "/email-templates",
