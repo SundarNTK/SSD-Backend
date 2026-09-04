@@ -7,12 +7,14 @@ const { auditablePlugin, activeUniqueIndexOptions } = require("../../common/plug
  * Referenced by Deity and Item.
  */
 const printingGroupSchema = new mongoose.Schema({
+  code: { type: String, required: true, trim: true, uppercase: true },
   name: { type: String, required: true, trim: true },
   description: { type: String, default: "" },
 });
 
 printingGroupSchema.plugin(auditablePlugin);
 
+printingGroupSchema.index({ code: 1 }, activeUniqueIndexOptions({ collation: { locale: "en", strength: 2 } }));
 printingGroupSchema.index({ name: 1 }, activeUniqueIndexOptions({ collation: { locale: "en", strength: 2 } }));
 printingGroupSchema.index({ status: 1, createdAt: -1 });
 

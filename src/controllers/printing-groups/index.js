@@ -4,6 +4,9 @@ const validateBody = require("../../common/middleware/validate");
 const makeCrudController = require("../../common/factories/crud-controller");
 
 const PrintingGroup = require("../../models/printing-groups");
+const Deity = require("../../models/deities");
+const Item = require("../../models/items");
+const Service = require("../../models/services");
 const { createSchema, updateSchema } = require("./request-objects");
 
 // Mounted at /masters alongside every other master controller — see
@@ -12,7 +15,14 @@ const { createSchema, updateSchema } = require("./request-objects");
 // shared /notifications prefix), not per master.
 const router = express.Router();
 
-const crud = makeCrudController(PrintingGroup, { searchFields: ["name", "description"] });
+const crud = makeCrudController(PrintingGroup, {
+  searchFields: ["code", "name", "description"],
+  referencedBy: [
+    { model: Deity, field: "printingGroup", label: "Deity" },
+    { model: Item, field: "printingGroup", label: "Item" },
+    { model: Service, field: "printingGroup", label: "Service" },
+  ],
+});
 
 router.get("/printing-groups", requirePermission("printing-groups", "view"), crud.list);
 router.post(
