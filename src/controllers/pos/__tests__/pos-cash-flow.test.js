@@ -25,6 +25,8 @@ const Item = require("../../../models/items");
 const Service = require("../../../models/services");
 const { Customer } = require("../../../models/customers");
 const PaymentMode = require("../../../models/payment-modes");
+const Category = require("../../../models/categories");
+const SubCategory = require("../../../models/sub-categories");
 const { Order } = require("../../../models/orders");
 const { Booking } = require("../../../models/bookings");
 const { Transaction } = require("../../../models/transactions");
@@ -50,6 +52,7 @@ function mockQuery(result) {
   return {
     select: jest.fn(() => mockQuery(result)),
     populate: jest.fn(() => mockQuery(result)),
+    sort: jest.fn(() => mockQuery(result)),
     then: (resolve, reject) => Promise.resolve(result).then(resolve, reject),
     catch: (reject) => Promise.resolve(result).catch(reject),
   };
@@ -58,6 +61,17 @@ function mockQuery(result) {
 function mockRes() {
   return { status: jest.fn().mockReturnThis(), json: jest.fn().mockReturnThis() };
 }
+
+// createOrder/confirmOrder resolve the POS-visible category/sub-category
+// hierarchy (common/utils/pos-catalogue-visibility) to decide whether a
+// line's item/service is still POS-available — an empty hierarchy is fine
+// for every test here since none of them set categoryDetails on their
+// mock item/service, and offeringInPosHierarchy treats "no categoryDetails"
+// as always visible. Set once at module scope (not inside a beforeEach) so
+// jest.clearAllMocks() elsewhere in this file — which clears call history,
+// not implementations — never wipes it back out.
+Category.find = jest.fn(() => mockQuery([]));
+SubCategory.find = jest.fn(() => mockQuery([]));
 
 const validCustomer = {
   _id: CUSTOMER_ID,

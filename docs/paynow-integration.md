@@ -13,19 +13,37 @@ possible, adapted to SSD-Backend's single-entity POS flow
 PayNow QR payment is **two completely separate, asynchronous steps** — this
 is the single most important thing to understand about it:
 
-1. **QR generation** (`POST /api/v1/payments/paynow/generate-qr`) — builds a
-   QR code image AND fixes the amount that payment will confirm. This talks
-   to DBS itself **only** if `PAYNOW_QR_ENGINE=java` (the certified path,
-   see below) — either way, no network call happens for the QR image itself.
-   What actually happens here: `controllers/pos-orders`' `createPendingPayment()`
-   resolves/validates the amount (the requested amount, or the full
-   outstanding balance), cancels any earlier still-open QR for the same
-   order, and writes a `pos_transactions` row with `paymentStatus: "pending"`
-   and that amount — **fixed, from this point on** — before the QR image is
-   even built. Generating a QR is still not a payment (nothing is marked
-   `"paid"` here, and a customer could generate ten QRs — each cancelling
-   the last — and pay none of them) — but unlike an earlier version of this
-   endpoint, it is no longer a pure read.
+1. **QR generation** builds a QR code image AND fixes the amount that
+   payment will confirm. This talks to DBS itself **only** if
+   `PAYNOW_QR_ENGINE=java` (the certified path, see below) — either way, no
+   network call happens for the QR image itself. What actually happens:
+   `controllers/pos-orders`' `createPendingPayment()` resolves/validates the
+   amount (the requested amount, or the full outstanding balance), cancels
+   any earlier still-open QR for the same order, and writes a
+   `pos_transactions` row with `paymentStatus: "pending"` and that amount —
+   **fixed, from this point on** — before the QR image is even built
+   (`buildPaynowQrForOrder`, `controllers/pos-orders/index.js`). Generating a
+   QR is still not a payment (nothing is marked `"paid"` here, and a
+   customer could generate ten QRs — each cancelling the last — and pay
+   none of them).
+
+   This runs from **two places**, sharing the same `buildPaynowQrForOrder`:
+   - **The order's very first payment** — `POST /pos/booking/orders`
+     (`controllers/pos-orders`' `createOrder`) builds the QR itself, right
+     inside that same request, and returns it embedded as
+     `paymentDetails: { amount, qr, engine }` in the order-create response.
+     The POS counter never has to make a second call just to see a QR for a
+     brand new PayNow order. If QR-building fails (config incomplete, a
+     render error), the order itself is still created and returned —
+     `paymentDetails` comes back `null` and `paymentDetailsError` names
+     why, so the frontend can fall back to the standalone route below with
+     the order's `referenceId` rather than losing the order (and its
+     inventory hold) outright.
+   - **A top-up against an already-confirmed booking** —
+     `POST /payments/paynow/generate-qr` (`controllers/payments/paynow/
+     generate-qr/index.js`) — there's no order-create response to embed a
+     QR into at that point (BookingSuccessView's "Pay Again"), so this
+     standalone route is still what the frontend calls directly.
 
 2. **Payment confirmation** — either **DBS itself**, calling
    `POST /api/v1/payments/paynow/icn-response` with an encrypted "Instant
@@ -168,13 +186,19 @@ DBS paperwork is done. **None of it is safe to use for a real payment**:
   generated with these, **the money would go to HEB's bank account**, not
   SSD's, regardless of what the app or receipt says.
 - The PGP key pair is HEB's own DBS-issued keys.
-- `PAYNOW_CREDENTIALS_ARE_SSD_OWN=false` in `.env` reflects this. `generate-qr`
-  refuses to run at all if `NODE_ENV=production` while this stays `false`
-  (`assertPaynowConfigured()` in `generate-qr/index.js`) — this is the one
-  safety net stopping a forgotten swap from silently going live on HEB's
-  identity. **Do not remove or bypass this check.** Flip it to `true` only
-  once every value in the table above, and both key files, are genuinely
-  SSD's own.
+- `PAYNOW_CREDENTIALS_ARE_SSD_OWN=false` in `.env` reflects this.
+  `assertPaynowConfigured()` (`generate-qr/render.js`) refuses to run the
+  **`java` engine** at all if `NODE_ENV=production` while this stays
+  `false` — this is the one safety net stopping a forgotten swap from
+  silently going live on HEB's identity through DBS's actual certified
+  pipeline. **Do not remove or bypass this check.** Flip
+  `PAYNOW_CREDENTIALS_ARE_SSD_OWN` to `true` only once every value in the
+  table above, and both key files, are genuinely SSD's own. The **`dummy`
+  engine** (the default — see below) is deliberately exempt from this guard:
+  it never talks to DBS's certified pipeline at all, so it's safe to run in
+  any environment, including a Render deployment's `NODE_ENV=production`,
+  purely to demo/test the POS flow end-to-end before SSD's own DBS
+  onboarding is done.
 - `MERCHANT_NAME` is left as HEB's real name (not relabelled "Sri Siva Durga
   Temple") deliberately — displaying SSD's name while the money still
   routes to HEB's account would be more actively misleading than leaving it
@@ -257,7 +281,7 @@ issues SSD's PayNow Corporate service) for:
 
 ## Files
 
-- `src/controllers/payments/paynow/generate-qr/` — QR generation (`index.js`, `find-java.js`)
+- `src/controllers/payments/paynow/generate-qr/` — `index.js` (the standalone HTTP route, top-ups only), `render.js` (the actual QR-rendering logic + `assertPaynowConfigured`, shared with `controllers/pos-orders`' `buildPaynowQrForOrder` so a brand new order's first QR can be built in-process without a require cycle), `find-java.js`
 - `src/controllers/payments/paynow/icn-response/` — the webhook (`index.js`, `decrypt-response.js`)
 - `src/controllers/payments/dispatch.js` — the shared prefix-routed confirmation dispatcher both this and future payment modes (NETS) call into
 - `src/controllers/payments/index.js` — routes: `POST /paynow/generate-qr` (operator-authenticated), `POST /paynow/icn-response` (public)

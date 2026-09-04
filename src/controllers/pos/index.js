@@ -71,6 +71,7 @@ const PaymentMode = require("../../models/payment-modes");
 const { Order } = require("../../models/orders");
 const { Booking, BOOKING_STATUSES } = require("../../models/bookings");
 const { Transaction } = require("../../models/transactions");
+const { PosBooking } = require("../../models/pos-bookings");
 
 const {
   placeReservationsForOrder,
@@ -318,7 +319,21 @@ async function lookupCustomerByMobile(req, res) {
  * The counter's "repeat a past booking" feature — last N confirmed
  * bookings for a customer, with full line detail so the frontend can offer
  * to re-add them to the cart (after re-checking live availability via
- * recheckLines(), since the catalogue may have moved on since then).
+ * recheckLines(), since the catalogue may have moved on since then), and so
+ * the devotee-suggestion chips in the booking form can offer "who this
+ * customer usually books for".
+ *
+ * Shared by both the POS Portal and Admin Booking trees (registered once
+ * via registerCatalogueRoutes), and reads BOTH booking collections —
+ * models/bookings (legacy `bookings`, still written by Admin Booking) AND
+ * models/pos-bookings (`pos_bookings`, written by the POS Portal since its
+ * order/booking/payment writes moved off the shared collections onto their
+ * own — see controllers/pos-orders). A customer's history can legitimately
+ * span both depending on which counter booked them; querying only one (the
+ * bug this fixed) silently hid the other's devotees — most visibly for a
+ * staff member's own linked "self" customer, whose bookings are almost
+ * always POS Portal ones and so had ZERO rows in the legacy collection this
+ * used to query exclusively.
  */
 async function getRecentBookings(req, res) {
   try {
@@ -326,21 +341,32 @@ async function getRecentBookings(req, res) {
     if (!mongoose.isValidObjectId(customerId)) throw "Invalid customer ID.";
     const limit = Math.min(10, Math.max(1, Number(req.query.limit) || 3));
 
-    const bookings = await Booking.find(Booking.notDeletedFilter({ customer: customerId, bookingStatus: "confirmed" }))
-      .select("bookingNumber orderId lines grandTotal bookedAt")
-      .populate("orderId", "orderNumber")
-      .populate("lines.deities", "name")
-      .sort({ bookedAt: -1 })
-      .limit(limit);
+    const [legacyBookings, posBookings] = await Promise.all([
+      Booking.find(Booking.notDeletedFilter({ customer: customerId, bookingStatus: "confirmed" }))
+        .select("bookingNumber orderId lines grandTotal bookedAt")
+        .populate("orderId", "orderNumber")
+        .populate("lines.deities", "name")
+        .sort({ bookedAt: -1 })
+        .limit(limit),
+      PosBooking.find(PosBooking.notDeletedFilter({ customer: customerId, bookingStatus: "confirmed" }))
+        .select("bookingNumber orderId lines grandTotal bookedAt")
+        .populate("orderId", "orderNumber")
+        .populate("lines.deities", "name")
+        .sort({ bookedAt: -1 })
+        .limit(limit),
+    ]);
 
-    const items = bookings.map((b) => ({
-      _id: b._id,
-      bookingNumber: b.bookingNumber,
-      orderNumber: b.orderId?.orderNumber ?? null,
-      lines: b.lines,
-      grandTotal: b.grandTotal,
-      bookedAt: b.bookedAt,
-    }));
+    const items = [...legacyBookings, ...posBookings]
+      .sort((a, b) => new Date(b.bookedAt) - new Date(a.bookedAt))
+      .slice(0, limit)
+      .map((b) => ({
+        _id: b._id,
+        bookingNumber: b.bookingNumber,
+        orderNumber: b.orderId?.orderNumber ?? null,
+        lines: b.lines,
+        grandTotal: b.grandTotal,
+        bookedAt: b.bookedAt,
+      }));
 
     return responseHandler({ res, response: { items } });
   } catch (error) {
@@ -1794,3 +1820,4 @@ module.exports.confirmOrder = confirmOrder;
 module.exports.getOrderStatus = getOrderStatus;
 module.exports.effectiveQuantity = effectiveQuantity;
 module.exports.recordBookingPayment = recordBookingPayment;
+module.exports.getRecentBookings = getRecentBookings;
