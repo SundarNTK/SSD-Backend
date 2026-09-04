@@ -13,6 +13,8 @@ const subCategorySchema = new mongoose.Schema({
   color: { type: String, required: true },
   description: { type: String, default: "" },
   image: { type: String, default: null }, // full Cloudinary secure_url
+  posVisibility: { type: Boolean, default: true },
+  customerPortalVisibility: { type: Boolean, default: true },
 });
 
 subCategorySchema.plugin(auditablePlugin);

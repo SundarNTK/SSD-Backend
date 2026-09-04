@@ -51,6 +51,7 @@ const {
   cancelReservations,
 } = require("../pos/inventory-reservation");
 const { effectiveQuantity } = require("../../common/utils/effective-quantity");
+const { loadPosVisibleHierarchy, offeringInPosHierarchy } = require("../../common/utils/pos-catalogue-visibility");
 
 const { createOrderSchema, confirmOrderSchema, recordPaymentSchema } = require("./request-objects");
 
@@ -152,6 +153,7 @@ async function createOrder(req, res) {
     if (error) throw error.details[0].message;
 
     const { customerId, lines, paymentModeId, paidAmount } = value;
+    const hierarchy = await loadPosVisibleHierarchy();
 
     const customer = await Customer.findOne(
       Customer.notDeletedFilter({ _id: customerId, status: 1 })
@@ -176,7 +178,9 @@ async function createOrder(req, res) {
         const item = await Item.findOne(
           Item.notDeletedFilter({ _id: refId, status: 1, posAvailability: true })
         ).populate("generalLedger", "gstType");
-        if (!item) throw `An item in the cart is no longer available.`;
+        if (!item || !offeringInPosHierarchy(item, hierarchy.categoryIds, hierarchy.subCategoryIds)) {
+          throw `An item in the cart is no longer available.`;
+        }
         name = item.name;
         code = item.code;
         unitPrice = item.salePrice;
@@ -185,7 +189,9 @@ async function createOrder(req, res) {
         const svc = await Service.findOne(
           Service.notDeletedFilter({ _id: refId, status: 1, isPosAvailable: true })
         ).populate("generalLedger", "gstType");
-        if (!svc) throw `A service in the cart is no longer available.`;
+        if (!svc || !offeringInPosHierarchy(svc, hierarchy.categoryIds, hierarchy.subCategoryIds)) {
+          throw `A service in the cart is no longer available.`;
+        }
         name = svc.name;
         code = svc.code;
         unitPrice = svc.salePrice ?? 0;

@@ -16,6 +16,8 @@ const createSchema = Joi.object({
   }),
   description: Joi.string().allow("").default(""),
   image: Joi.string().allow("").default(null),
+  posVisibility: Joi.boolean().default(true),
+  customerPortalVisibility: Joi.boolean().default(true),
   status: Joi.number().valid(0, 1).default(1),
 });
 
@@ -30,6 +32,8 @@ const updateSchema = Joi.object({
   }),
   description: Joi.string().allow(""),
   image: Joi.string().allow(""),
+  posVisibility: Joi.boolean(),
+  customerPortalVisibility: Joi.boolean(),
   status: Joi.number().valid(0, 1),
 });
 

@@ -29,6 +29,10 @@ app.use(morgan(env.NODE_ENV === "development" ? "dev" : "combined"));
 // brute-forcing a password — see common/middleware/rate-limit.js.
 app.use(env.API_PREFIX, apiLimiter, routes);
 
+// Render (and other hosts) probe GET/HEAD / after deploy, not /api/v1/health.
+app.get("/", (_req, res) => res.status(200).json({ ok: true, service: "SSD-Backend" }));
+app.head("/", (_req, res) => res.sendStatus(200));
+
 // 404 — no matching route
 app.use((req, res) => exceptionHandler({ res, error: `Not found: ${req.method} ${req.originalUrl}`, statusCode: 404 }));
 

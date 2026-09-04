@@ -9,6 +9,10 @@ const categorySchema = new mongoose.Schema({
   color: { type: String, required: true },
   description: { type: String, default: "" },
   image: { type: String, default: null }, // full Cloudinary secure_url
+  // Where this category (and its sub-categories / assigned items & services)
+  // may appear. Missing values are treated as visible (see POS catalogue).
+  posVisibility: { type: Boolean, default: true },
+  customerPortalVisibility: { type: Boolean, default: true },
 });
 
 categorySchema.plugin(auditablePlugin);
