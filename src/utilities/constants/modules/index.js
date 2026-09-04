@@ -27,6 +27,10 @@
  *                      GET /pos/booking/payment-modes also accepts this
  *                      module's view level (or admin-booking's) — see
  *                      requirePaymentModeAccess() in controllers/pos
+ *   pos-order-confirmation → GET /pos-order-confirmation/pending, /pending/:referenceId
+ *                      POST /pos-order-confirmation/:referenceId/confirm (fullAccess —
+ *                      manually confirming a PayNow/NETS payment that hasn't
+ *                      had its real bank/terminal confirmation arrive)
  *
  * Level semantics, applied consistently by every route:
  *   view       → read-only (GET)
@@ -47,6 +51,7 @@ const AVAILABLE_MODULES = [
   { key: "roles", label: "Roles & Permissions", group: "Administration" },
   { key: "email-templates", label: "Email Templates", group: "Administration" },
   { key: "printing-groups", label: "Printing Group Master", group: "Masters" },
+  { key: "units", label: "Unit Master", group: "Masters" },
   { key: "gst", label: "GST Master", group: "Masters" },
   { key: "gl-groups", label: "GL Group Master", group: "Masters" },
   { key: "deities", label: "Deity Master", group: "Masters" },
@@ -61,6 +66,7 @@ const AVAILABLE_MODULES = [
   { key: "inventory", label: "Inventory", group: "Inventory" },
   { key: "admin-booking", label: "Admin Booking", group: "Transactions" },
   { key: "pos-transactions", label: "POS Transactions", group: "Transactions" },
+  { key: "pos-order-confirmation", label: "POS Order Confirmation", group: "Transactions" },
 ];
 
 const MODULE_KEYS = AVAILABLE_MODULES.map((m) => m.key);

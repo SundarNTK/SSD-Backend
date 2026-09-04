@@ -26,7 +26,15 @@ const { PosBooking } = require("../../../models/pos-bookings");
 const { PosTransaction } = require("../../../models/pos-transactions");
 const { placeReservationsForOrder, consumeReservations, cancelReservations } = require("../../pos/inventory-reservation");
 const { nextSequence } = require("../../../common/utils/sequence");
-const { createOrder, confirmOrder, getOrderStatus, recordBookingPayment, confirmPosPayment } = require("../index");
+const {
+  createOrder,
+  confirmOrder,
+  getOrderStatus,
+  recordBookingPayment,
+  confirmPosPayment,
+  createPendingPayment,
+  writePosBookingOnly,
+} = require("../index");
 
 const RECEIPT_NO = "RCP-20260826-0001";
 
@@ -43,6 +51,7 @@ function mockQuery(result) {
   return {
     select: jest.fn(() => mockQuery(result)),
     populate: jest.fn(() => mockQuery(result)),
+    sort: jest.fn(() => mockQuery(result)),
     then: (resolve, reject) => Promise.resolve(result).then(resolve, reject),
     catch: (reject) => Promise.resolve(result).catch(reject),
   };
@@ -244,6 +253,7 @@ describe("confirmOrder (Cash flow, pos_orders)", () => {
     PosBooking.deleteOne = jest.fn(async () => {});
     PosTransaction.create = jest.fn(async (doc) => ({ _id: "999999999999999999999999", ...doc }));
     PosTransaction.findOne = jest.fn(() => mockQuery(null));
+    PosTransaction.find = jest.fn(() => mockQuery([]));
     PosTransaction.deleteOne = jest.fn(async () => {});
     Customer.findById = jest.fn(() => mockQuery(validCustomer));
 
@@ -265,12 +275,12 @@ describe("confirmOrder (Cash flow, pos_orders)", () => {
     expect(res.status).toHaveBeenCalledWith(201);
   });
 
-  it("is idempotent: re-confirming an already-confirmed order returns the existing booking + its receipt without creating a new one", async () => {
-    const existingBookingData = { _id: BOOKING_ID, bookingNumber: "BKG202608260004", bookingStatus: "confirmed" };
+  it("is idempotent: re-confirming an already-confirmed order returns the existing booking (with amountPaid/balanceAmount correctly computed, not undefined) + its receipt without creating a new one", async () => {
+    const existingBookingData = { _id: BOOKING_ID, bookingNumber: "BKG202608260004", bookingStatus: "confirmed", grandTotal: 175 };
     const existingBooking = { ...existingBookingData, toObject: () => existingBookingData };
     PosOrder.findOne = jest.fn(() => mockQuery(pendingOrder({ orderStatus: "confirmed", bookingId: BOOKING_ID })));
     PosBooking.findById = jest.fn(() => mockQuery(existingBooking));
-    PosTransaction.findOne = jest.fn(() => mockQuery({ receiptNo: RECEIPT_NO }));
+    PosTransaction.find = jest.fn(() => mockQuery([{ receiptNo: RECEIPT_NO, amount: 100, paymentStatus: "paid" }]));
 
     const req = { params: { id: ORDER_ID }, body: {} };
     const res = mockRes();
@@ -279,7 +289,10 @@ describe("confirmOrder (Cash flow, pos_orders)", () => {
 
     expect(PosBooking.create).not.toHaveBeenCalled();
     expect(res.json).toHaveBeenCalledWith(
-      expect.objectContaining({ success: true, data: expect.objectContaining({ ...existingBookingData, receiptNo: RECEIPT_NO }) })
+      expect.objectContaining({
+        success: true,
+        data: expect.objectContaining({ ...existingBookingData, receiptNo: RECEIPT_NO, amountPaid: 100, balanceAmount: 75 }),
+      })
     );
   });
 
@@ -314,14 +327,14 @@ describe("getOrderStatus (pos_orders)", () => {
     );
   });
 
-  it("returns the booking details once the order is confirmed", async () => {
-    const bookingData = { _id: BOOKING_ID, bookingNumber: "BKG202608260004", bookingStatus: "confirmed", grandTotal: 175 };
+  it("returns the booking details once the order is confirmed, with amountPaid/balanceAmount correctly computed — this is the exact response PaynowQrModal's poll reads to build its success message, so an undefined balanceAmount here silently breaks that flow", async () => {
+    const bookingData = { _id: BOOKING_ID, bookingNumber: "BKG202608260004", bookingStatus: "confirmed", paymentStatus: "partial", grandTotal: 175 };
     const booking = { ...bookingData, toObject: () => bookingData };
     PosOrder.findOne = jest.fn(() =>
       mockQuery({ _id: ORDER_ID, orderNumber: "POS202608260009", referenceId: REFERENCE_ID, orderStatus: "confirmed", bookingId: BOOKING_ID })
     );
     PosBooking.findById = jest.fn(() => mockQuery(booking));
-    PosTransaction.findOne = jest.fn(() => mockQuery({ receiptNo: RECEIPT_NO }));
+    PosTransaction.find = jest.fn(() => mockQuery([{ receiptNo: RECEIPT_NO, amount: 100, paymentStatus: "paid" }]));
     const req = { params: { id: ORDER_ID } };
     const res = mockRes();
 
@@ -329,7 +342,14 @@ describe("getOrderStatus (pos_orders)", () => {
 
     expect(res.json).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ ...bookingData, receiptNo: RECEIPT_NO, referenceId: REFERENCE_ID, status: "confirmed" }),
+        data: expect.objectContaining({
+          ...bookingData,
+          receiptNo: RECEIPT_NO,
+          referenceId: REFERENCE_ID,
+          status: "confirmed",
+          amountPaid: 100,
+          balanceAmount: 75,
+        }),
       })
     );
   });
@@ -389,15 +409,112 @@ describe("recordBookingPayment (collect the rest, pos_bookings)", () => {
   });
 });
 
-describe("confirmPosPayment (shared confirmation dispatcher entrypoint)", () => {
+describe("createPendingPayment (QR generated — fixes the amount, matches Cash's own paidAmount-at-checkout rule)", () => {
+  function pendingOrder(overrides = {}) {
+    return {
+      _id: ORDER_ID,
+      orderStatus: "pending",
+      grandTotal: 175,
+      customer: CUSTOMER_ID,
+      paymentMode: PAYMENT_MODE_ID,
+      paymentModeName: "PayNow",
+      bookingId: null,
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    PosOrder.findOne = jest.fn(() => mockQuery(pendingOrder()));
+    PosTransaction.updateMany = jest.fn(async () => {});
+    PosTransaction.create = jest.fn(async (doc) => ({ _id: "999999999999999999999999", ...doc }));
+    nextSequence.mockResolvedValue(5);
+  });
+
+  it("creates a PENDING transaction fixed at the full outstanding balance when no amount is requested", async () => {
+    const { transaction } = await createPendingPayment({ referenceId: REFERENCE_ID, amount: undefined, processedBy: USER_ID });
+
+    expect(PosTransaction.create).toHaveBeenCalledWith(
+      expect.objectContaining({ orderId: ORDER_ID, amount: 175, paymentStatus: "pending", expiresAt: expect.any(Date) })
+    );
+    expect(transaction.amount).toBe(175);
+  });
+
+  it("fixes the PENDING transaction at a genuinely partial requested amount", async () => {
+    const { transaction } = await createPendingPayment({ referenceId: REFERENCE_ID, amount: 100, processedBy: USER_ID });
+
+    expect(PosTransaction.create).toHaveBeenCalledWith(expect.objectContaining({ amount: 100 }));
+    expect(transaction.amount).toBe(100);
+  });
+
+  it("rejects a requested amount greater than the outstanding balance", async () => {
+    await expect(createPendingPayment({ referenceId: REFERENCE_ID, amount: 999 })).rejects.toMatch(/cannot exceed/);
+    expect(PosTransaction.create).not.toHaveBeenCalled();
+  });
+
+  it("worst case #1 — cancels any earlier still-pending transaction for the same order before creating the new one", async () => {
+    await createPendingPayment({ referenceId: REFERENCE_ID, amount: 100 });
+
+    expect(PosTransaction.updateMany).toHaveBeenCalledWith(
+      { orderId: ORDER_ID, paymentStatus: "pending" },
+      { $set: { paymentStatus: "cancelled" } }
+    );
+  });
+
+  it("rejects when the order is already fully paid", async () => {
+    PosOrder.findOne = jest.fn(() =>
+      mockQuery(pendingOrder({ orderStatus: "confirmed", bookingId: BOOKING_ID }))
+    );
+    PosBooking.findById = jest.fn(() => mockQuery({ _id: BOOKING_ID, grandTotal: 175 }));
+    PosTransaction.find = jest.fn(() => mockQuery([{ amount: 175, paymentStatus: "paid" }]));
+
+    await expect(createPendingPayment({ referenceId: REFERENCE_ID })).rejects.toMatch(/already fully paid/);
+  });
+
+  it("rejects an order that was cancelled", async () => {
+    PosOrder.findOne = jest.fn(() => mockQuery(pendingOrder({ orderStatus: "cancelled" })));
+
+    await expect(createPendingPayment({ referenceId: REFERENCE_ID })).rejects.toMatch(/cancelled/);
+  });
+
+  it("defaults the transaction's payment mode to the order's own when no override is given", async () => {
+    PosOrder.findOne = jest.fn(() =>
+      mockQuery(pendingOrder({ paymentMode: PAYMENT_MODE_ID, paymentModeName: "Cash" }))
+    );
+
+    await createPendingPayment({ referenceId: REFERENCE_ID, amount: 100 });
+
+    expect(PosTransaction.create).toHaveBeenCalledWith(
+      expect.objectContaining({ paymentMode: PAYMENT_MODE_ID, paymentModeName: "Cash" })
+    );
+  });
+
+  it("worst case #2 — tags the transaction with the CALLER'S payment mode, not the order's original one, so a PayNow top-up on a Cash-booked order isn't mislabeled Cash", async () => {
+    const PAYNOW_MODE_ID = "cccccccccccccccccccccccd";
+    PosOrder.findOne = jest.fn(() =>
+      mockQuery(pendingOrder({ paymentMode: PAYMENT_MODE_ID, paymentModeName: "Cash" }))
+    );
+
+    await createPendingPayment({
+      referenceId: REFERENCE_ID,
+      amount: 100,
+      paymentMode: PAYNOW_MODE_ID,
+      paymentModeName: "PayNow",
+    });
+
+    expect(PosTransaction.create).toHaveBeenCalledWith(
+      expect.objectContaining({ paymentMode: PAYNOW_MODE_ID, paymentModeName: "PayNow" })
+    );
+  });
+});
+
+describe("confirmPosPayment (shared confirmation dispatcher entrypoint — confirms a PENDING transaction createPendingPayment already created)", () => {
   function pendingOrder(overrides = {}) {
     return {
       _id: ORDER_ID,
       orderNumber: "POS202608260009",
       referenceId: REFERENCE_ID,
       orderStatus: "pending",
-      expiresAt: new Date(Date.now() + 30 * 60 * 1000),
-      customer: { ...validCustomer },
       lines: [{ refType: "Service", refId: SERVICE_ID, name: "Special Darshan", code: "SV-016", quantity: 1, unitPrice: 175, lineTotal: 175, deities: [], devotees: [] }],
       subtotal: 175,
       gstAmount: 0,
@@ -411,17 +528,39 @@ describe("confirmPosPayment (shared confirmation dispatcher entrypoint)", () => 
     };
   }
 
+  function pendingTxn(overrides = {}) {
+    return {
+      _id: "999999999999999999999999",
+      orderId: ORDER_ID,
+      bookingId: null,
+      amount: 175,
+      paymentStatus: "pending",
+      paymentMode: PAYMENT_MODE_ID,
+      paymentModeName: "PayNow",
+      receiptNo: RECEIPT_NO,
+      expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+      ...overrides,
+    };
+  }
+
   beforeEach(() => {
     jest.clearAllMocks();
 
     PosOrder.findOne = jest.fn(() => mockQuery(pendingOrder()));
     PosOrder.findByIdAndUpdate = jest.fn(async () => {});
+    // confirmPosPayment calls findOne twice with different filters — the
+    // duplicate-gatewayReference check (paymentStatus: "paid") and the
+    // find-the-pending-row lookup (paymentStatus: "pending"). This mock has
+    // to tell them apart, or the first call's default answer would satisfy
+    // both regardless of which query it actually was.
+    PosTransaction.findOne = jest.fn((filter) =>
+      mockQuery(filter.paymentStatus === "paid" ? null : pendingTxn())
+    );
+    PosTransaction.findOneAndUpdate = jest.fn(async (filter, update) => ({ ...pendingTxn(), ...update.$set }));
+    PosTransaction.findByIdAndUpdate = jest.fn(async () => {});
     PosBooking.create = jest.fn(async (doc) => ({ _id: BOOKING_ID, ...doc }));
     PosBooking.findById = jest.fn(() => mockQuery(null));
     PosBooking.deleteOne = jest.fn(async () => {});
-    PosTransaction.create = jest.fn(async (doc) => ({ _id: "999999999999999999999999", ...doc }));
-    PosTransaction.findOne = jest.fn(() => mockQuery(null));
-    PosTransaction.deleteOne = jest.fn(async () => {});
     Customer.findById = jest.fn(() => mockQuery(validCustomer));
 
     nextSequence.mockResolvedValue(4);
@@ -429,57 +568,132 @@ describe("confirmPosPayment (shared confirmation dispatcher entrypoint)", () => 
     cancelReservations.mockResolvedValue(undefined);
   });
 
-  it("confirms the first (and only) payment for a still-pending order, writing the pos_booking + pos_transaction with the gateway reference attached", async () => {
-    const result = await confirmPosPayment(REFERENCE_ID, {
-      amount: 175,
-      gatewayReference: "DBS-TXN-REF-001",
-      processedBy: USER_ID,
-    });
+  it("claims the pending transaction atomically, then confirms the first payment for a still-pending order — writes the pos_booking, does NOT create a new transaction", async () => {
+    const result = await confirmPosPayment(REFERENCE_ID, { gatewayReference: "DBS-TXN-REF-001", processedBy: USER_ID });
 
-    expect(PosBooking.create).toHaveBeenCalledWith(expect.objectContaining({ paymentStatus: "paid", bookingStatus: "confirmed" }));
-    expect(PosTransaction.create).toHaveBeenCalledWith(
-      expect.objectContaining({ amount: 175, paymentStatus: "paid", gatewayReference: "DBS-TXN-REF-001" })
+    expect(PosTransaction.findOneAndUpdate).toHaveBeenCalledWith(
+      { _id: "999999999999999999999999", paymentStatus: "pending" },
+      { $set: { paymentStatus: "paid", gatewayReference: "DBS-TXN-REF-001", processedBy: USER_ID } },
+      { new: true }
     );
+    expect(PosBooking.create).toHaveBeenCalledWith(expect.objectContaining({ paymentStatus: "paid", bookingStatus: "confirmed", grandTotal: 175 }));
+    expect(PosTransaction.findByIdAndUpdate).toHaveBeenCalledWith("999999999999999999999999", { bookingId: BOOKING_ID });
     expect(result.alreadyProcessed).toBe(false);
-    expect(result.referenceId).toBe(REFERENCE_ID);
+    expect(result.amountPaid).toBe(175);
   });
 
-  it("is idempotent: a duplicate callback carrying a gatewayReference already recorded as paid is a no-op", async () => {
-    PosTransaction.findOne = jest.fn(() => mockQuery({ _id: "already-paid-txn" }));
+  it("rejects a confirmation amount that doesn't match the pending transaction's own fixed amount — the amount cannot be changed at confirm time", async () => {
+    await expect(confirmPosPayment(REFERENCE_ID, { amount: 999, gatewayReference: "DBS-TXN-REF-001" })).rejects.toMatch(
+      /does not match the expected amount/
+    );
+    expect(PosTransaction.findOneAndUpdate).not.toHaveBeenCalled();
+  });
 
+  it("accepts a confirmation amount that DOES match the pending transaction's fixed amount (e.g. a real gateway echoing it back)", async () => {
     const result = await confirmPosPayment(REFERENCE_ID, { amount: 175, gatewayReference: "DBS-TXN-REF-001" });
+    expect(result.alreadyProcessed).toBe(false);
+  });
+
+  it("is idempotent: a duplicate callback carrying a gatewayReference already recorded as paid is a no-op, without touching the pending row", async () => {
+    PosTransaction.findOne = jest.fn((filter) =>
+      mockQuery(filter.paymentStatus === "paid" ? { _id: "already-paid-txn" } : pendingTxn())
+    );
+
+    const result = await confirmPosPayment(REFERENCE_ID, { gatewayReference: "DBS-TXN-REF-001" });
+
+    expect(PosTransaction.findOneAndUpdate).not.toHaveBeenCalled();
+    expect(PosBooking.create).not.toHaveBeenCalled();
+    expect(result.alreadyProcessed).toBe(true);
+  });
+
+  it("worst case #2 — a race where something else claims the pending row first (findOneAndUpdate matches nothing) is reported alreadyProcessed instead of double-confirming", async () => {
+    PosTransaction.findOneAndUpdate = jest.fn(async () => null);
+
+    const result = await confirmPosPayment(REFERENCE_ID, { gatewayReference: "DBS-TXN-REF-001" });
 
     expect(PosBooking.create).not.toHaveBeenCalled();
     expect(result.alreadyProcessed).toBe(true);
   });
 
-  it("treats a payment against an already-confirmed order as a balance top-up, not a second booking", async () => {
-    PosOrder.findOne = jest.fn(() => mockQuery(pendingOrder({ orderStatus: "confirmed", bookingId: BOOKING_ID })));
-    PosBooking.findById = jest.fn(() => mockQuery({
-      _id: BOOKING_ID,
-      orderId: ORDER_ID,
-      customer: CUSTOMER_ID,
-      grandTotal: 175,
-      paymentMode: PAYMENT_MODE_ID,
-      paymentModeName: "PayNow",
-      paymentStatus: "partial",
-      bookingStatus: "confirmed",
-      save: jest.fn(async function save() {
-        return this;
-      }),
-    }));
-    PosTransaction.find = jest.fn(() => mockQuery([{ amount: 100, paymentStatus: "paid" }]));
+  it("marks an expired pending transaction expired and refuses to confirm it", async () => {
+    PosTransaction.findOne = jest.fn((filter) =>
+      mockQuery(filter.paymentStatus === "paid" ? null : pendingTxn({ expiresAt: new Date(Date.now() - 1000) }))
+    );
 
-    const result = await confirmPosPayment(REFERENCE_ID, { amount: 75, gatewayReference: "DBS-TXN-REF-002" });
+    await expect(confirmPosPayment(REFERENCE_ID, { gatewayReference: "DBS-TXN-REF-001" })).rejects.toMatch(/expired/);
+
+    expect(PosTransaction.findByIdAndUpdate).toHaveBeenCalledWith("999999999999999999999999", { paymentStatus: "expired" });
+    expect(PosTransaction.findOneAndUpdate).not.toHaveBeenCalled();
+  });
+
+  it("rejects when there is no pending transaction for this order at all", async () => {
+    PosTransaction.findOne = jest.fn(() => mockQuery(null));
+
+    await expect(confirmPosPayment(REFERENCE_ID, { gatewayReference: "DBS-TXN-REF-001" })).rejects.toMatch(/No pending payment found/);
+  });
+
+  it("treats a payment against an already-confirmed order as a balance top-up, recomputing paymentStatus from all paid transactions instead of creating a second booking", async () => {
+    PosOrder.findOne = jest.fn(() => mockQuery(pendingOrder({ orderStatus: "confirmed", bookingId: BOOKING_ID })));
+    PosTransaction.findOne = jest.fn((filter) =>
+      mockQuery(filter.paymentStatus === "paid" ? null : pendingTxn({ bookingId: BOOKING_ID, amount: 75 }))
+    );
+    PosTransaction.findOneAndUpdate = jest.fn(async () => pendingTxn({ bookingId: BOOKING_ID, amount: 75, paymentStatus: "paid" }));
+    PosBooking.findById = jest.fn(() =>
+      mockQuery({
+        _id: BOOKING_ID,
+        grandTotal: 175,
+        paymentStatus: "partial",
+        save: jest.fn(async function save() {
+          return this;
+        }),
+      })
+    );
+    PosTransaction.find = jest.fn(() => mockQuery([{ amount: 100, paymentStatus: "paid" }, { amount: 75, paymentStatus: "paid" }]));
+
+    const result = await confirmPosPayment(REFERENCE_ID, { gatewayReference: "DBS-TXN-REF-002" });
 
     expect(PosBooking.create).not.toHaveBeenCalled();
-    expect(PosTransaction.create).toHaveBeenCalledWith(expect.objectContaining({ amount: 75, gatewayReference: "DBS-TXN-REF-002" }));
+    expect(result.amountPaid).toBe(175);
     expect(result.balanceAmount).toBe(0);
   });
 
   it("rejects a reference id that doesn't match any pos_order", async () => {
     PosOrder.findOne = jest.fn(() => mockQuery(null));
 
-    await expect(confirmPosPayment("POS9999999999", { amount: 175 })).rejects.toMatch(/No POS order found/);
+    await expect(confirmPosPayment("POS9999999999", {})).rejects.toMatch(/No POS order found/);
+  });
+});
+
+describe("writePosBookingOnly (books the fixed amount an already-paid PENDING transaction carries)", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    PosBooking.create = jest.fn(async (doc) => ({ _id: BOOKING_ID, ...doc }));
+    PosTransaction.findByIdAndUpdate = jest.fn(async () => {});
+    PosOrder.findByIdAndUpdate = jest.fn(async () => {});
+    nextSequence.mockResolvedValue(4);
+    consumeReservations.mockResolvedValue(undefined);
+  });
+
+  it("creates the booking, backfills bookingId onto the transaction, and marks the order confirmed", async () => {
+    const order = {
+      _id: ORDER_ID,
+      grandTotal: 175,
+      lines: [],
+      subtotal: 175,
+      gstAmount: 0,
+      customer: CUSTOMER_ID,
+      bookedBy: USER_ID,
+      entity: null,
+    };
+    const transaction = { _id: "999999999999999999999999", paymentMode: PAYMENT_MODE_ID, paymentModeName: "PayNow" };
+
+    const booking = await writePosBookingOnly(order, 175, transaction);
+
+    expect(PosBooking.create).toHaveBeenCalledWith(
+      expect.objectContaining({ orderId: ORDER_ID, paymentStatus: "paid", bookingStatus: "confirmed", paymentModeName: "PayNow" })
+    );
+    expect(PosTransaction.findByIdAndUpdate).toHaveBeenCalledWith("999999999999999999999999", { bookingId: BOOKING_ID });
+    expect(PosOrder.findByIdAndUpdate).toHaveBeenCalledWith(ORDER_ID, { orderStatus: "confirmed", bookingId: BOOKING_ID });
+    expect(booking._id).toBe(BOOKING_ID);
   });
 });

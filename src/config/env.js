@@ -75,4 +75,52 @@ module.exports = {
   DEFAULT_ENTITY_CODE: process.env.DEFAULT_ENTITY_CODE || "SST",
   SEED_SUPER_ADMIN_NAME: process.env.SEED_SUPER_ADMIN_NAME || "Temple System Admin",
   SEED_SUPER_ADMIN_EMAIL: (process.env.SEED_SUPER_ADMIN_EMAIL || "superadmin@example-temple.org").toLowerCase(),
+
+  /**
+   * PayNow (DBS PayNow Corporate) — QR generation + ICN webhook. No real
+   * fallback values here on purpose, unlike EMAIL_LOGO_URL/DEFAULT_ENTITY_CODE
+   * above — see docs/paynow-integration.md for the full picture, but in
+   * short: these values (PAYNOW_MERCHANT_NAME, PAYNOW_PROXY_VALUE
+   * especially) determine which bank account a scanned QR's money actually
+   * goes to, so nothing here should default to a real value baked into
+   * source — only an explicit .env entry, set on the deploying machine,
+   * should ever put a live value here. Every field is required at
+   * QR-generation time; controllers/payments/paynow/generate-qr throws a
+   * clear "PayNow is not configured" error rather than silently generating
+   * a broken QR if any of these is empty.
+   */
+  PAYNOW_CREDENTIALS_ARE_SSD_OWN: (process.env.PAYNOW_CREDENTIALS_ARE_SSD_OWN ?? "false") === "true",
+  /**
+   * "dummy"  → builds a real EMVCo-structured PayNow payload in pure JS
+   *            (build-payload.js) and renders it with the `qrcode` npm
+   *            package — no Java, no bank-signed SDK. Real field values
+   *            (merchant name, proxy, amount, referenceId), just not run
+   *            through DBS's own certified generation pipeline.
+   * "java"   → the original path: shells out to PayQRSDK.jar
+   *            (find-java.js + the jar under public/Paynowsdk/dist) —
+   *            requires a JRE on this machine and the real DBS-issued jar.
+   * Defaults to "dummy" so the QR can be seen/tested without Java or the
+   * bank SDK being set up at all. Switch to "java" once both of those are
+   * actually available and you want the certified generation path.
+   */
+  PAYNOW_QR_ENGINE: process.env.PAYNOW_QR_ENGINE || "dummy",
+  PAYNOW_MERCHANT_CATEGORY_CODE: process.env.PAYNOW_MERCHANT_CATEGORY_CODE || "",
+  PAYNOW_TXN_CURRENCY: process.env.PAYNOW_TXN_CURRENCY || "",
+  PAYNOW_COUNTRY_CODE: process.env.PAYNOW_COUNTRY_CODE || "",
+  PAYNOW_MERCHANT_NAME: process.env.PAYNOW_MERCHANT_NAME || "",
+  PAYNOW_MERCHANT_CITY: process.env.PAYNOW_MERCHANT_CITY || "",
+  PAYNOW_GLOBAL_UNIQUE_ID: process.env.PAYNOW_GLOBAL_UNIQUE_ID || "",
+  PAYNOW_PROXY_TYPE: process.env.PAYNOW_PROXY_TYPE || "",
+  PAYNOW_PROXY_VALUE: process.env.PAYNOW_PROXY_VALUE || "",
+  PAYNOW_EDITABLE_AMOUNT: process.env.PAYNOW_EDITABLE_AMOUNT || "",
+  PAYNOW_POINT_OF_INITIATION: process.env.PAYNOW_POINT_OF_INITIATION || "",
+  PAYNOW_QR_COLOR_CODE: process.env.PAYNOW_QR_COLOR_CODE || "",
+  // Not read at request time — DBS calls this URL directly, configured on
+  // their side. Kept here purely so there's one place in the app that
+  // states what that URL currently is, for whoever next talks to DBS.
+  PAYNOW_ICN_RESPONSE_URL: process.env.PAYNOW_ICN_RESPONSE_URL || "",
+  // Paths to the DBS key material — see public/Paynowsdk's own note (and
+  // .gitignore) for why these files are local-only, not committed.
+  PAYNOW_PRIVATE_KEY_PATH: process.env.PAYNOW_PRIVATE_KEY_PATH || "public/Paynowsdk/dbs-paynow-private-SECRET.asc",
+  PAYNOW_PUBLIC_KEY_PATH: process.env.PAYNOW_PUBLIC_KEY_PATH || "public/Paynowsdk/dbs-paynow-public-uat.asc",
 };
