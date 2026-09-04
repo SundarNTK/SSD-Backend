@@ -16,16 +16,20 @@
 
 jest.mock("../../pos/inventory-reservation");
 jest.mock("../../../common/utils/sequence");
+jest.mock("../../payments/paynow/generate-qr/render");
 
 const Item = require("../../../models/items");
 const Service = require("../../../models/services");
 const { Customer } = require("../../../models/customers");
 const PaymentMode = require("../../../models/payment-modes");
+const Category = require("../../../models/categories");
+const SubCategory = require("../../../models/sub-categories");
 const { PosOrder } = require("../../../models/pos-orders");
 const { PosBooking } = require("../../../models/pos-bookings");
 const { PosTransaction } = require("../../../models/pos-transactions");
 const { placeReservationsForOrder, consumeReservations, cancelReservations } = require("../../pos/inventory-reservation");
 const { nextSequence } = require("../../../common/utils/sequence");
+const { assertPaynowConfigured, renderQrImage } = require("../../payments/paynow/generate-qr/render");
 const {
   createOrder,
   confirmOrder,
@@ -60,6 +64,16 @@ function mockQuery(result) {
 function mockRes() {
   return { status: jest.fn().mockReturnThis(), json: jest.fn().mockReturnThis() };
 }
+
+// createOrder resolves the POS-visible category/sub-category hierarchy
+// (common/utils/pos-catalogue-visibility) — an empty hierarchy is fine here
+// since no test's mock item/service sets categoryDetails, and
+// offeringInPosHierarchy treats "no categoryDetails" as always visible. Set
+// once at module scope, not inside a beforeEach, so jest.clearAllMocks()
+// elsewhere in this file (which clears call history, not implementations)
+// never wipes it back out.
+Category.find = jest.fn(() => mockQuery([]));
+SubCategory.find = jest.fn(() => mockQuery([]));
 
 const validCustomer = {
   _id: CUSTOMER_ID,
@@ -140,8 +154,8 @@ describe("createOrder (Cash flow, pos_orders)", () => {
     );
   });
 
-  it("leaves a non-Cash order pending instead of confirming it, and never writes a pos_booking", async () => {
-    PaymentMode.findOne = jest.fn(() => mockQuery({ _id: PAYMENT_MODE_ID, name: "PayNow" }));
+  it("leaves a non-Cash, non-PayNow order (NETS) pending instead of confirming it, and never writes a pos_booking or a QR", async () => {
+    PaymentMode.findOne = jest.fn(() => mockQuery({ _id: PAYMENT_MODE_ID, name: "NETS" }));
     const req = { body: baseOrderBody(), auth: { userId: USER_ID, entityId: null } };
     const res = mockRes();
 
@@ -149,11 +163,80 @@ describe("createOrder (Cash flow, pos_orders)", () => {
 
     expect(PosBooking.create).not.toHaveBeenCalled();
     expect(consumeReservations).not.toHaveBeenCalled();
+    expect(renderQrImage).not.toHaveBeenCalled();
     expect(res.json).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ referenceId: expect.stringMatching(/^POS[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{10}$/), orderStatus: "pending", status: "pending" }),
+        data: expect.objectContaining({
+          referenceId: expect.stringMatching(/^POS[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{10}$/),
+          orderStatus: "pending",
+          status: "pending",
+          paymentDetails: null,
+        }),
       })
     );
+  });
+
+  describe("PayNow order creation — embeds the QR directly in this response (no separate /payments/paynow/generate-qr round trip needed)", () => {
+    function pendingPaynowOrder(overrides = {}) {
+      return {
+        _id: ORDER_ID,
+        orderStatus: "pending",
+        grandTotal: 175,
+        customer: CUSTOMER_ID,
+        paymentMode: PAYMENT_MODE_ID,
+        paymentModeName: "PayNow",
+        bookingId: null,
+        ...overrides,
+      };
+    }
+
+    beforeEach(() => {
+      PaymentMode.findOne = jest.fn(() => mockQuery({ _id: PAYMENT_MODE_ID, name: "PayNow" }));
+      PosOrder.findOne = jest.fn(() => mockQuery(pendingPaynowOrder()));
+      PosTransaction.updateMany = jest.fn(async () => {});
+      assertPaynowConfigured.mockImplementation(() => {});
+      renderQrImage.mockResolvedValue({ qrImage: "data:image/png;base64,FAKE", engine: "dummy" });
+    });
+
+    it("returns paymentDetails: { amount, qr, engine } straight in the order-create response", async () => {
+      const req = { body: baseOrderBody(), auth: { userId: USER_ID, entityId: null } };
+      const res = mockRes();
+
+      await createOrder(req, res);
+
+      expect(renderQrImage).toHaveBeenCalledWith(expect.stringMatching(/^POS/), 175);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            status: "pending",
+            paymentDetails: { amount: 175, qr: "data:image/png;base64,FAKE", engine: "dummy" },
+            paymentDetailsError: null,
+          }),
+        })
+      );
+    });
+
+    it("worst case — a QR build failure (config incomplete, render error, ...) does not fail order creation: the order still comes back with a referenceId, paymentDetails: null, and paymentDetailsError set", async () => {
+      assertPaynowConfigured.mockImplementation(() => {
+        throw "PayNow is not configured — missing: PAYNOW_MERCHANT_NAME.";
+      });
+      const req = { body: baseOrderBody(), auth: { userId: USER_ID, entityId: null } };
+      const res = mockRes();
+
+      await createOrder(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(201);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            status: "pending",
+            referenceId: expect.stringMatching(/^POS[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{10}$/),
+            paymentDetails: null,
+            paymentDetailsError: expect.stringContaining("not configured"),
+          }),
+        })
+      );
+    });
   });
 
   it("rejects when the customer is not found or inactive", async () => {

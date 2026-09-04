@@ -36,6 +36,11 @@ const { responseHandler, exceptionHandler } = require("../../utilities/handlers"
 const { nextSequence } = require("../../common/utils/sequence");
 const { withUniqueReferenceId, ORIGIN_PREFIXES } = require("../../common/utils/payment-reference");
 const { registerPaymentHandler } = require("../payments/dispatch");
+// Pure QR-image rendering, no dependency back on this module — see that
+// file's own comment for why this has to be the direction the require goes
+// (payments/paynow/generate-qr/index.js already requires THIS module for
+// createPendingPayment; requiring it back here would be a cycle).
+const { assertPaynowConfigured, renderQrImage } = require("../payments/paynow/generate-qr/render");
 
 const Item = require("../../models/items");
 const Service = require("../../models/services");
@@ -269,9 +274,35 @@ async function createOrder(req, res) {
       });
     }
 
-    // Any other mode (PayNow/NETS) stays "pending" — its own initiate route
-    // (Phase 2/3: generate-qr / nets/initiate) is what happens next, using
-    // this order's `referenceId`.
+    // PayNow builds its QR right here and embeds it as `paymentDetails` —
+    // the POS counter gets { amount, qr } in this SAME response and never
+    // has to make a second call to /payments/paynow/generate-qr just to see
+    // one. A QR failure (config incomplete, render error) does NOT fail
+    // order creation — the order and its inventory hold are already
+    // committed by this point, and the customer still needs a referenceId
+    // back to retry against; it comes back as `paymentDetailsError`
+    // instead, and the frontend can fall back to calling
+    // POST /payments/paynow/generate-qr directly with this referenceId
+    // (still a live route — also what top-ups against an already-confirmed
+    // booking use, since there's no order-create response to embed into
+    // there).
+    let paymentDetails = null;
+    let paymentDetailsError = null;
+    if (paymentMode.name.trim().toLowerCase() === "paynow") {
+      try {
+        paymentDetails = await buildPaynowQrForOrder({
+          referenceId: order.referenceId,
+          amount: paidAmount,
+          processedBy: req.auth?.userId ?? null,
+        });
+      } catch (qrError) {
+        paymentDetailsError = typeof qrError === "string" ? qrError : "Could not generate the PayNow QR. Please try again.";
+      }
+    }
+
+    // Any other mode (NETS) stays "pending" with no paymentDetails yet —
+    // its own initiate route (Phase 3) is what happens next, using this
+    // order's `referenceId`.
     return responseHandler({
       res,
       response: {
@@ -293,6 +324,8 @@ async function createOrder(req, res) {
         orderStatus: order.orderStatus,
         expiresAt: order.expiresAt,
         status: "pending",
+        paymentDetails,
+        paymentDetailsError,
       },
       successMessage: "Order created. Inventory held for 30 minutes.",
       statusCode: 201,
@@ -815,6 +848,49 @@ async function createPendingPayment({ referenceId, amount: requestedAmount, paym
 }
 
 /**
+ * Fixes a PayNow pending payment's amount AND renders its QR in one call —
+ * used both by createOrder below (embeds the result straight into the
+ * order-create response as `paymentDetails`, so a brand new PayNow order
+ * never needs a second round trip just to see a QR) and by the standalone
+ * POST /payments/paynow/generate-qr route (top-ups against an already-
+ * confirmed booking, which has no "order create" response to embed into).
+ *
+ * Looks up the "PayNow" PaymentMode itself and always tags the pending
+ * transaction with it — same reasoning as createPendingPayment's own doc
+ * comment: this function only ever generates a PayNow QR, so its pending
+ * transaction must always read as PayNow, regardless of what mode the
+ * order was originally created/booked under.
+ */
+async function buildPaynowQrForOrder({ referenceId, amount, processedBy }) {
+  assertPaynowConfigured();
+
+  const paynowMode = await PaymentMode.findOne(PaymentMode.notDeletedFilter({ name: "PayNow", status: 1 }));
+  if (!paynowMode) throw "PayNow is not configured as an available payment mode.";
+
+  const { transaction } = await createPendingPayment({
+    referenceId,
+    amount,
+    paymentMode: paynowMode._id,
+    paymentModeName: paynowMode.name,
+    processedBy,
+  });
+
+  let qrImage, engine;
+  try {
+    ({ qrImage, engine } = await renderQrImage(referenceId, transaction.amount));
+  } catch (renderError) {
+    // The pending payment this QR promised is unconfirmable with no QR ever
+    // shown for it — cancel it rather than leaving a ghost entry an admin
+    // would otherwise see on the pos-order-confirmation screen for a
+    // payment nobody could actually have made.
+    await PosTransaction.findByIdAndUpdate(transaction._id, { paymentStatus: "cancelled" }).catch(() => {});
+    throw renderError;
+  }
+
+  return { amount: transaction.amount, qr: qrImage, engine };
+}
+
+/**
  * Writes the PosBooking for an order's first payment when that payment's
  * PosTransaction ALREADY exists (created pending by createPendingPayment,
  * now claimed paid by confirmPosPayment below) — unlike
@@ -988,6 +1064,7 @@ module.exports = {
   confirmPosPayment,
   // used by controllers/payments/paynow/generate-qr
   createPendingPayment,
+  buildPaynowQrForOrder,
   resolveOutstandingBalance,
   // exposed for unit testing, same pattern controllers/pos/index.js uses
   createOrder,
