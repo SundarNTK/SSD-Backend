@@ -7,6 +7,7 @@ const { responseHandler, exceptionHandler } = require("../../utilities/handlers"
 const Gst = require("../../models/gst");
 const GeneralLedger = require("../../models/general-ledgers");
 const { canonicalGstType, gstTypeMatchValues, isOfficialType, isZeroRateGstType, validateGstPercentage } = require("../../utilities/constants/gst-types");
+const { findBlockingReference } = require("../../common/utils/reference-guard");
 const { createSchema, updateSchema } = require("./request-objects");
 
 const router = express.Router();
@@ -186,6 +187,13 @@ async function remove(req, res) {
         error: "An active GST record cannot be deleted. Deactivate it first.",
         statusCode: 400,
       });
+    }
+    const blockingMessage = await findBlockingReference(
+      [{ model: GeneralLedger, field: "gstType", label: "General Ledger" }],
+      doc._id
+    );
+    if (blockingMessage) {
+      return exceptionHandler({ res, error: blockingMessage, statusCode: 409 });
     }
     await doc.softDelete(req.auth?.userId);
     return responseHandler({ res, successMessage: "Deactivated successfully." });

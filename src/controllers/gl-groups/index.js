@@ -6,6 +6,7 @@ const { responseHandler, exceptionHandler } = require("../../utilities/handlers"
 const escapeRegex = require("../../common/utils/escape-regex");
 
 const GlGroup = require("../../models/gl-groups");
+const GeneralLedger = require("../../models/general-ledgers");
 const { createSchema, updateSchema } = require("./request-objects");
 
 /**
@@ -77,7 +78,18 @@ async function create(req, res) {
 // once for the whole /masters group there, not per master).
 const router = express.Router();
 
-const crud = makeCrudController(GlGroup);
+const crud = makeCrudController(GlGroup, {
+  referencedBy: [
+    // A Level 1/2 group with live children (Level 2/3 rows still pointing
+    // at it) or a General Ledger account still filed under it, at any of
+    // its three levels, can't be deleted out from under them.
+    { model: GlGroup, field: "level1", label: "Level 2/3 GL Group" },
+    { model: GlGroup, field: "level2", label: "Level 3 GL Group" },
+    { model: GeneralLedger, field: "groupLevel1", label: "General Ledger" },
+    { model: GeneralLedger, field: "groupLevel2", label: "General Ledger" },
+    { model: GeneralLedger, field: "groupLevel3", label: "General Ledger" },
+  ],
+});
 
 router.get("/gl-groups", requirePermission("gl-groups", "view"), list);
 router.post("/gl-groups", requirePermission("gl-groups", "fullAccess"), validateBody(createSchema), create);

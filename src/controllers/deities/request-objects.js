@@ -3,6 +3,7 @@ const Joi = require("joi");
 const objectId = Joi.string().hex().length(24);
 
 const createSchema = Joi.object({
+  code: Joi.string().trim().min(1).max(20).required(),
   name: Joi.string().trim().min(2).max(100).required(),
   tamilName: Joi.string().allow("").default(""),
   printingGroup: objectId.required(),
@@ -10,6 +11,7 @@ const createSchema = Joi.object({
 });
 
 const updateSchema = Joi.object({
+  code: Joi.string().trim().min(1).max(20),
   name: Joi.string().trim().min(2).max(100),
   tamilName: Joi.string().allow(""),
   printingGroup: objectId,
