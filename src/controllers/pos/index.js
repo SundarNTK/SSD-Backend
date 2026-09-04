@@ -63,8 +63,6 @@ const ensureCustomerProfileForUser = require("../../utilities/helpers/ensure-cus
 
 const Item = require("../../models/items");
 const Service = require("../../models/services");
-const Category = require("../../models/categories");
-const SubCategory = require("../../models/sub-categories");
 const Deity = require("../../models/deities");
 const Nakshathiram = require("../../models/nakshathirams");
 const Entity = require("../../models/entities");
@@ -103,6 +101,12 @@ function searchRegex(term) {
 // for the full rationale. Re-exported below (module.exports.effectiveQuantity)
 // so existing test imports of this module keep working unchanged.
 const { effectiveQuantity } = require("../../common/utils/effective-quantity");
+const {
+  POS_VISIBLE,
+  loadPosVisibleHierarchy,
+  posHierarchyClause,
+  offeringInPosHierarchy,
+} = require("../../common/utils/pos-catalogue-visibility");
 
 /**
  * Generate the next sequential order number: POS-YYYYMMDD-NNNN
@@ -355,22 +359,32 @@ async function listPosItems(req, res) {
     const page = Math.max(1, Number(req.query.page) || 1);
     const pageSize = Math.min(100, Number(req.query.pageSize) || 50);
 
+    const { categoryIds, subCategoryIds } = await loadPosVisibleHierarchy();
+
+    const and = [posHierarchyClause(categoryIds, subCategoryIds)];
     const filter = Item.notDeletedFilter({ status: 1, posAvailability: true });
     if (req.query.search) {
       const regex = searchRegex(req.query.search);
-      filter.$or = [{ name: regex }, { code: regex }];
+      and.push({ $or: [{ name: regex }, { code: regex }] });
     }
     if (req.query.category) {
+      if (!categoryIds.some((id) => String(id) === String(req.query.category))) {
+        return responseHandler({ res, response: { items: [], total: 0, page, pageSize } });
+      }
       filter["categoryDetails.category"] = req.query.category;
     }
     if (req.query.subCategory) {
+      if (!subCategoryIds.some((id) => String(id) === String(req.query.subCategory))) {
+        return responseHandler({ res, response: { items: [], total: 0, page, pageSize } });
+      }
       filter["categoryDetails.subCategory"] = req.query.subCategory;
     }
+    filter.$and = and;
 
     const [items, total] = await Promise.all([
       Item.find(filter)
-        .populate({ path: "categoryDetails.category", select: "name color", match: { isDeleted: false, status: 1 } })
-        .populate({ path: "categoryDetails.subCategory", select: "name", match: { isDeleted: false, status: 1 } })
+        .populate({ path: "categoryDetails.category", select: "name color", match: { isDeleted: false, status: 1, posVisibility: POS_VISIBLE } })
+        .populate({ path: "categoryDetails.subCategory", select: "name", match: { isDeleted: false, status: 1, posVisibility: POS_VISIBLE } })
         .populate("generalLedger", "gstType")
         .populate("deityMapping", "name")
         .select("name tamilName code salePrice isInventoryApplicable currentStock threshold isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers minQuantity maxQuantity categoryDetails image")
@@ -397,22 +411,32 @@ async function listPosServices(req, res) {
     const page = Math.max(1, Number(req.query.page) || 1);
     const pageSize = Math.min(100, Number(req.query.pageSize) || 50);
 
+    const { categoryIds, subCategoryIds } = await loadPosVisibleHierarchy();
+
+    const and = [posHierarchyClause(categoryIds, subCategoryIds)];
     const filter = Service.notDeletedFilter({ status: 1, isPosAvailable: true });
     if (req.query.search) {
       const regex = searchRegex(req.query.search);
-      filter.$or = [{ name: regex }, { code: regex }];
+      and.push({ $or: [{ name: regex }, { code: regex }] });
     }
     if (req.query.category) {
+      if (!categoryIds.some((id) => String(id) === String(req.query.category))) {
+        return responseHandler({ res, response: { items: [], total: 0, page, pageSize } });
+      }
       filter["categoryDetails.category"] = req.query.category;
     }
     if (req.query.subCategory) {
+      if (!subCategoryIds.some((id) => String(id) === String(req.query.subCategory))) {
+        return responseHandler({ res, response: { items: [], total: 0, page, pageSize } });
+      }
       filter["categoryDetails.subCategory"] = req.query.subCategory;
     }
+    filter.$and = and;
 
     const [services, total] = await Promise.all([
       Service.find(filter)
-        .populate({ path: "categoryDetails.category", select: "name color", match: { isDeleted: false, status: 1 } })
-        .populate({ path: "categoryDetails.subCategory", select: "name", match: { isDeleted: false, status: 1 } })
+        .populate({ path: "categoryDetails.category", select: "name color", match: { isDeleted: false, status: 1, posVisibility: POS_VISIBLE } })
+        .populate({ path: "categoryDetails.subCategory", select: "name", match: { isDeleted: false, status: 1, posVisibility: POS_VISIBLE } })
         .populate("deityMapping", "name")
         .select("name tamilName code salePrice categoryDetails isInventoryRequired currentStock thresholdCount isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers sessionRequired image")
         .sort({ name: 1 })
@@ -536,21 +560,12 @@ async function listPaymentModes(req, res) {
  */
 async function getCatalogue(req, res) {
   try {
-    const [items, services, categories] = await Promise.all([
-      Item.find(Item.notDeletedFilter({ status: 1, posAvailability: true })).select("categoryDetails"),
-      Service.find(Service.notDeletedFilter({ status: 1, isPosAvailable: true })).select("categoryDetails"),
-      Category.find(Category.notDeletedFilter({ status: 1 })).select("name color image").sort({ displayOrder: 1, name: 1 }),
+    const { categories, subCategories, categoryIds, subCategoryIds } = await loadPosVisibleHierarchy();
+    const visible = posHierarchyClause(categoryIds, subCategoryIds);
+    const [items, services] = await Promise.all([
+      Item.find(Item.notDeletedFilter({ status: 1, posAvailability: true, $and: [visible] })).select("categoryDetails"),
+      Service.find(Service.notDeletedFilter({ status: 1, isPosAvailable: true, $and: [visible] })).select("categoryDetails"),
     ]);
-
-    const subCategoryIds = new Set();
-    for (const doc of [...items, ...services]) {
-      for (const cd of doc.categoryDetails || []) {
-        if (cd.subCategory) subCategoryIds.add(String(cd.subCategory));
-      }
-    }
-    const subCategories = await SubCategory.find(
-      SubCategory.notDeletedFilter({ status: 1, _id: { $in: [...subCategoryIds] } })
-    ).select("name tamilName color image");
     const subCategoryById = new Map(subCategories.map((s) => [String(s._id), s]));
     const categoryById = new Map(categories.map((c) => [String(c._id), c]));
 
@@ -756,6 +771,7 @@ async function bookingSummary(req, res) {
     if (error) throw error.details[0].message;
 
     const { customerId, lines } = value;
+    const hierarchy = await loadPosVisibleHierarchy();
 
     // Validate customer exists
     const customer = await Customer.findOne(
@@ -776,7 +792,9 @@ async function bookingSummary(req, res) {
         const item = await Item.findOne(
           Item.notDeletedFilter({ _id: refId, status: 1, posAvailability: true })
         ).populate("generalLedger", "gstType");
-        if (!item) throw `Item not found or not available at POS.`;
+        if (!item || !offeringInPosHierarchy(item, hierarchy.categoryIds, hierarchy.subCategoryIds)) {
+          throw `Item not found or not available at POS.`;
+        }
 
         name = item.name;
         code = item.code;
@@ -786,7 +804,9 @@ async function bookingSummary(req, res) {
         const svc = await Service.findOne(
           Service.notDeletedFilter({ _id: refId, status: 1, isPosAvailable: true })
         ).populate("generalLedger", "gstType");
-        if (!svc) throw `Service not found or not available at POS.`;
+        if (!svc || !offeringInPosHierarchy(svc, hierarchy.categoryIds, hierarchy.subCategoryIds)) {
+          throw `Service not found or not available at POS.`;
+        }
 
         name = svc.name;
         code = svc.code;
@@ -879,6 +899,7 @@ async function recheckLines(req, res) {
     const { error, value } = recheckLinesSchema.validate(req.body);
     if (error) throw error.details[0].message;
 
+    const hierarchy = await loadPosVisibleHierarchy();
     const results = await Promise.all(
       value.lines.map(async (line) => {
         const { refType, refId, quantity, deities, devotees } = line;
@@ -895,7 +916,9 @@ async function recheckLines(req, res) {
             "deityMapping",
             "name tamilName"
           );
-          if (!item) return { ...base, available: false, reason: "No longer available for sale." };
+          if (!item || !offeringInPosHierarchy(item, hierarchy.categoryIds, hierarchy.subCategoryIds)) {
+            return { ...base, available: false, reason: "No longer available for sale." };
+          }
           name = item.name;
           code = item.code;
           unitPrice = item.salePrice;
@@ -911,7 +934,9 @@ async function recheckLines(req, res) {
             "deityMapping",
             "name tamilName"
           );
-          if (!svc) return { ...base, available: false, reason: "No longer available for sale." };
+          if (!svc || !offeringInPosHierarchy(svc, hierarchy.categoryIds, hierarchy.subCategoryIds)) {
+            return { ...base, available: false, reason: "No longer available for sale." };
+          }
           name = svc.name;
           code = svc.code;
           unitPrice = svc.salePrice ?? 0;
@@ -987,6 +1012,7 @@ async function createOrder(req, res) {
     if (error) throw error.details[0].message;
 
     const { customerId, lines, paymentModeId, paidAmount } = value;
+    const hierarchy = await loadPosVisibleHierarchy();
 
     const customer = await Customer.findOne(
       Customer.notDeletedFilter({ _id: customerId, status: 1 })
@@ -1011,7 +1037,9 @@ async function createOrder(req, res) {
         const item = await Item.findOne(
           Item.notDeletedFilter({ _id: refId, status: 1, posAvailability: true })
         ).populate("generalLedger", "gstType");
-        if (!item) throw `An item in the cart is no longer available.`;
+        if (!item || !offeringInPosHierarchy(item, hierarchy.categoryIds, hierarchy.subCategoryIds)) {
+          throw `An item in the cart is no longer available.`;
+        }
         name = item.name;
         code = item.code;
         unitPrice = item.salePrice;
@@ -1020,7 +1048,9 @@ async function createOrder(req, res) {
         const svc = await Service.findOne(
           Service.notDeletedFilter({ _id: refId, status: 1, isPosAvailable: true })
         ).populate("generalLedger", "gstType");
-        if (!svc) throw `A service in the cart is no longer available.`;
+        if (!svc || !offeringInPosHierarchy(svc, hierarchy.categoryIds, hierarchy.subCategoryIds)) {
+          throw `A service in the cart is no longer available.`;
+        }
         name = svc.name;
         code = svc.code;
         unitPrice = svc.salePrice ?? 0;

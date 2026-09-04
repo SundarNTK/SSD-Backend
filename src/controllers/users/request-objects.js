@@ -29,7 +29,6 @@ const roleIdsField = Joi.alternatives()
       }
     })
   )
-  .default([])
   .messages({ "any.invalid": "Roles must be a list of role ids." });
 
 // Booleans arrive as the string "true"/"false" whenever the form is
@@ -43,7 +42,7 @@ const createSchema = Joi.object({
   name: Joi.string().trim().min(2).max(100).required(),
   email: Joi.string().trim().email({ tlds: false }).required(),
   mobileNumber: Joi.string().trim().allow(null, "").default(null),
-  roleIds: roleIdsField,
+  roleIds: roleIdsField.default([]),
   accessUpto: Joi.date().iso().allow(null, "").default(null),
   status: Joi.number().valid(0, 1).default(1),
   profileImage: Joi.string().allow(null, "").default(null),
