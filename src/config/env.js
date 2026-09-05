@@ -123,4 +123,23 @@ module.exports = {
   // .gitignore) for why these files are local-only, not committed.
   PAYNOW_PRIVATE_KEY_PATH: process.env.PAYNOW_PRIVATE_KEY_PATH || "public/Paynowsdk/dbs-paynow-private-SECRET.asc",
   PAYNOW_PUBLIC_KEY_PATH: process.env.PAYNOW_PUBLIC_KEY_PATH || "public/Paynowsdk/dbs-paynow-public-uat.asc",
+
+  /**
+   * NETS terminal/EXE -> backend confirmation — see
+   * controllers/payments/nets/callback. The Nets-Service EXE sends this
+   * same value as X-Nets-Callback-Secret; this route is mounted
+   * unauthenticated (no admin JWT — the EXE is a machine, not a logged-in
+   * operator) the same way PayNow's ICN webhook is, and this header is what
+   * stands in for DBS's PGP signature there.
+   *
+   * Used to be a per-install Configuration-page field on the EXE side too,
+   * matched against this env var by hand — any time one side changed
+   * without the other, every NETS payment confirmation silently broke until
+   * someone noticed the error. Now hardcoded to the same literal string on
+   * both sides (source/amq/ssdBackendClient.js's NETS_CALLBACK_SECRET
+   * constant) so there's nothing left to keep in sync; .env can still
+   * override it here if a real secret is ever wanted, but nothing requires
+   * it to be set.
+   */
+  NETS_CALLBACK_SECRET: process.env.NETS_CALLBACK_SECRET || "sdfsfdsfadfsafs",
 };

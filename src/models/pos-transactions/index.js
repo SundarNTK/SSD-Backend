@@ -67,6 +67,15 @@ const posTransactionSchema = new mongoose.Schema({
   transactionDate: { type: Date, required: true },
   processedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
 
+  // Set only by a manual admin confirmation (controllers/pos-order-
+  // confirmation's confirmManually) — an audit trail alongside
+  // gatewayReference (which stays the field idempotency/matching actually
+  // uses), modeled on the extra fields HEB's own admin confirm screens
+  // capture (transaction type, payment/value date, receiving/sender
+  // party). Never set by a real gateway/terminal webhook — those only ever
+  // set gatewayReference.
+  manualConfirmationDetails: { type: mongoose.Schema.Types.Mixed, default: null },
+
   // Denormalized snapshots — see common/utils/entity-snapshot.
   customerInfo: { type: mongoose.Schema.Types.Mixed, default: null },
   processedByInfo: { type: mongoose.Schema.Types.Mixed, default: null },

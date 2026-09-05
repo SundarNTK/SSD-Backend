@@ -203,9 +203,39 @@ describe("confirmManually", () => {
     expect(dispatchPaymentConfirmation).toHaveBeenCalledWith(REFERENCE_ID, {
       gatewayReference: "MANUAL-REF-001",
       processedBy: "u1",
+      manualConfirmationDetails: null,
     });
     expect(res.status).toHaveBeenCalledWith(201);
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ bookingNumber: "BKG1" }) }));
+  });
+
+  it("forwards HEB-style audit fields (txnType/txnDate/receivingParty/senderParty) as manualConfirmationDetails, without touching gatewayReference", async () => {
+    dispatchPaymentConfirmation.mockResolvedValue({ alreadyProcessed: false, bookingNumber: "BKG1", paymentStatus: "paid" });
+
+    const req = {
+      params: { referenceId: REFERENCE_ID },
+      body: {
+        gatewayReference: "MANUAL-REF-002",
+        txnType: "Inward Paynow",
+        txnDate: "2026-09-05",
+        receivingParty: { name: "Sri Siva Durga Temple", accountNo: "000000000" },
+        senderParty: { name: "Devotee", senderBankId: "DBSSSGSGXXX" },
+      },
+      auth: { userId: "u1" },
+    };
+    const res = mockRes();
+
+    await confirmManually(req, res);
+
+    const [, details] = dispatchPaymentConfirmation.mock.calls[0];
+    expect(details.gatewayReference).toBe("MANUAL-REF-002");
+    expect(details.manualConfirmationDetails).toEqual(
+      expect.objectContaining({
+        txnType: "Inward Paynow",
+        receivingParty: { name: "Sri Siva Durga Temple", accountNo: "000000000" },
+        senderParty: { name: "Devotee", senderBankId: "DBSSSGSGXXX" },
+      })
+    );
   });
 
   it("rejects a request with no gatewayReference", async () => {

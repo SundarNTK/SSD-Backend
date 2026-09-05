@@ -11,6 +11,7 @@
     "test": "jest",
     "sync:pools": "node src/seed/syncPools.js",
     "seed:payment-modes": "node src/seed/seedPaymentModes.js",
+    "seed:print-split-setting": "node src/seed/seedPrintSplitSetting.js",
     "migrate": "node src/seed/migrate.js"
   },
   "keywords": [],
