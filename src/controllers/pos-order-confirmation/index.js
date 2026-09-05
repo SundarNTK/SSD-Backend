@@ -179,9 +179,16 @@ async function confirmManually(req, res) {
     const { error, value } = manualConfirmSchema.validate(req.body ?? {});
     if (error) throw error.details[0].message;
 
+    const { gatewayReference, ...auditFields } = value;
+    const hasAuditFields = Object.keys(auditFields).length > 0;
+
     const result = await dispatchPaymentConfirmation(referenceId, {
-      gatewayReference: value.gatewayReference,
+      gatewayReference,
       processedBy: req.auth?.userId ?? null,
+      // Pure audit trail (txnType/txnDate/valueDt/receivingParty/
+      // senderParty) — see request-objects.js's own comment. Not used for
+      // idempotency/matching by confirmPosPayment, only stored.
+      manualConfirmationDetails: hasAuditFields ? auditFields : null,
     });
 
     return responseHandler({

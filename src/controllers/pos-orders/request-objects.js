@@ -54,9 +54,22 @@ const recordPaymentSchema = Joi.object({
   paymentModeId: Joi.string().hex().length(24).allow(null).default(null),
 });
 
+/**
+ * POST /pos/booking/nets/initiate — the balance-top-up counterpart to
+ * POST /pos/booking/orders/:id/nets/initiate (keyed by referenceId rather
+ * than an order _id, since a top-up on an already-confirmed booking has no
+ * order-create response to hang a URL param off — same reasoning as
+ * PayNow's own standalone POST /payments/paynow/generate-qr).
+ */
+const initiateNetsByReferenceSchema = Joi.object({
+  referenceId: Joi.string().trim().required(),
+  amount: Joi.number().greater(0).precision(2).required(),
+});
+
 module.exports = {
   cartLineSchema,
   createOrderSchema,
   confirmOrderSchema,
   recordPaymentSchema,
+  initiateNetsByReferenceSchema,
 };

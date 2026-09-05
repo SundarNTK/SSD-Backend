@@ -18,6 +18,7 @@ const ensureDefaultEntity = require("../utilities/helpers/ensure-default-entity"
 const ensureDefaultRoles = require("../utilities/helpers/ensure-default-roles");
 const { ensureDefaultEmailTemplates } = require("./seedEmailTemplates");
 const { ensureDefaultPaymentModes } = require("./seedPaymentModes");
+const { ensureDefaultPrintSplitSetting } = require("./seedPrintSplitSetting");
 const { generateRawToken, hashToken, addHours } = require("../common/utils/token");
 const sendTemplatedEmail = require("../utilities/helpers/send-templated-email");
 
@@ -28,12 +29,13 @@ async function run() {
     code: env.DEFAULT_ENTITY_CODE,
     name: "Sri Siva Durga Temple",
     templeName: "Sri Siva Durga Temple",
-    templeTamilName: "ஸ்ரீ சிவ துர்கா கோவில்",
+    templeTamilName: "ஸ்ரீ சிவ துர்க்கா ஆலயம்",
   });
   console.log(`>>> Seed: entity "${entity.code}" (${entity.name}) ready — _id ${entity._id}`);
 
   await ensureDefaultEmailTemplates(entity._id);
   await ensureDefaultPaymentModes();
+  await ensureDefaultPrintSplitSetting();
 
   const roles = await ensureDefaultRoles();
   const superAdminRole = roles["System Admin"];

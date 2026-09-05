@@ -31,6 +31,9 @@
  *                      POST /pos-order-confirmation/:referenceId/confirm (fullAccess —
  *                      manually confirming a PayNow/NETS payment that hasn't
  *                      had its real bank/terminal confirmation arrive)
+ *   print-split-setting → GET/PUT /masters/print-split-setting — singleton,
+ *                      decides Deity Wise vs Print Group Wise POS ticket
+ *                      printing (see models/print-split-settings)
  *
  * Level semantics, applied consistently by every route:
  *   view       → read-only (GET)
@@ -51,6 +54,7 @@ const AVAILABLE_MODULES = [
   { key: "roles", label: "Roles & Permissions", group: "Administration" },
   { key: "email-templates", label: "Email Templates", group: "Administration" },
   { key: "printing-groups", label: "Printing Group Master", group: "Masters" },
+  { key: "print-split-setting", label: "Print Split Setting", group: "Masters" },
   { key: "units", label: "Unit Master", group: "Masters" },
   { key: "gst", label: "GST Master", group: "Masters" },
   { key: "gl-groups", label: "GL Group Master", group: "Masters" },
