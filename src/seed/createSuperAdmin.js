@@ -44,7 +44,7 @@ async function run() {
     code: env.DEFAULT_ENTITY_CODE,
     name: "Sri Siva Durga Temple",
     templeName: "Sri Siva Durga Temple",
-    templeTamilName: "ஸ்ரீ சிவ துர்கா கோவில்",
+    templeTamilName: "ஸ்ரீ சிவ துர்க்கா ஆலயம்",
   });
   await ensureDefaultEmailTemplates(entity._id);
   const roles = await ensureDefaultRoles();

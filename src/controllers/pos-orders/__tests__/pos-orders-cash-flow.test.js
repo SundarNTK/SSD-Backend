@@ -38,6 +38,7 @@ const {
   confirmPosPayment,
   createPendingPayment,
   writePosBookingOnly,
+  initiateNetsPayment,
 } = require("../index");
 
 const RECEIPT_NO = "RCP-20260826-0001";
@@ -588,6 +589,58 @@ describe("createPendingPayment (QR generated — fixes the amount, matches Cash'
     expect(PosTransaction.create).toHaveBeenCalledWith(
       expect.objectContaining({ paymentMode: PAYNOW_MODE_ID, paymentModeName: "PayNow" })
     );
+  });
+});
+
+describe("initiateNetsPayment (the 'Phase 3' NETS initiate step — fixes the amount and creates a PENDING transaction, same as PayNow's buildPaynowQrForOrder minus the QR)", () => {
+  function pendingOrder(overrides = {}) {
+    return {
+      _id: ORDER_ID,
+      orderStatus: "pending",
+      grandTotal: 175,
+      customer: CUSTOMER_ID,
+      paymentMode: PAYMENT_MODE_ID,
+      paymentModeName: "NETS",
+      bookingId: null,
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    PosOrder.findOne = jest.fn(() => mockQuery(pendingOrder()));
+    PaymentMode.findOne = jest.fn(() => mockQuery({ _id: PAYMENT_MODE_ID, name: "NETS" }));
+    PosTransaction.updateMany = jest.fn(async () => {});
+    PosTransaction.create = jest.fn(async (doc) => ({ _id: "999999999999999999999999", ...doc }));
+    nextSequence.mockResolvedValue(5);
+  });
+
+  it("looks up the NETS payment mode and creates a PENDING transaction fixed at the full outstanding balance", async () => {
+    const result = await initiateNetsPayment({ referenceId: REFERENCE_ID, amount: undefined, processedBy: USER_ID });
+
+    expect(PaymentMode.findOne.mock.calls[0][0]).toEqual(expect.objectContaining({ name: "NETS", status: 1 }));
+    expect(PosTransaction.create).toHaveBeenCalledWith(
+      expect.objectContaining({ paymentMode: PAYMENT_MODE_ID, paymentModeName: "NETS", amount: 175, paymentStatus: "pending" })
+    );
+    expect(result).toEqual({ referenceId: REFERENCE_ID, amount: 175, currency: "SGD" });
+  });
+
+  it("fixes the transaction at a genuinely partial requested amount, matching what's returned", async () => {
+    const result = await initiateNetsPayment({ referenceId: REFERENCE_ID, amount: 100, processedBy: USER_ID });
+
+    expect(PosTransaction.create).toHaveBeenCalledWith(expect.objectContaining({ amount: 100 }));
+    expect(result.amount).toBe(100);
+  });
+
+  it("rejects when NETS isn't configured as an available payment mode", async () => {
+    PaymentMode.findOne = jest.fn(() => mockQuery(null));
+
+    await expect(initiateNetsPayment({ referenceId: REFERENCE_ID })).rejects.toMatch(/not configured/);
+    expect(PosTransaction.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects a requested amount greater than the outstanding balance, same guard createPendingPayment already enforces", async () => {
+    await expect(initiateNetsPayment({ referenceId: REFERENCE_ID, amount: 999 })).rejects.toMatch(/cannot exceed/);
   });
 });
 

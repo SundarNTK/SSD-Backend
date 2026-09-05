@@ -13,6 +13,7 @@ const requirePermission = require("../../common/middleware/require-permission");
 
 const generatePaynowQr = require("./paynow/generate-qr");
 const icnResponse = require("./paynow/icn-response");
+const netsCallback = require("./nets/callback");
 
 const router = express.Router();
 
@@ -35,5 +36,11 @@ router.post(
 // tolerates) — scoped to this one route so every other /payments route
 // keeps the app's normal JSON body parsing untouched.
 router.post("/paynow/icn-response", express.text({ type: () => true, limit: "1mb" }), icnResponse);
+
+// ── NETS callback — public, called by the local Nets-Service EXE ───────
+// Not admin-JWT-gated (the EXE holds no such session) — a shared-secret
+// header stands in for auth here instead. See controllers/payments/nets/
+// callback's own module comment for the full HEB-equivalence rationale.
+router.post("/nets/callback", netsCallback);
 
 module.exports = router;

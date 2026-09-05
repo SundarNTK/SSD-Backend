@@ -49,6 +49,9 @@ const PaymentMode = require("../../models/payment-modes");
 const { PosOrder } = require("../../models/pos-orders");
 const { PosBooking, POS_BOOKING_STATUSES } = require("../../models/pos-bookings");
 const { PosTransaction } = require("../../models/pos-transactions");
+const PrintSplitSetting = require("../../models/print-split-settings");
+const findActiveEntityById = require("../../utilities/helpers/find-active-entity-by-id");
+const { resolveLineUnits, buildTicketGroups } = require("../../common/utils/ticket-grouping");
 
 const {
   placeReservationsForOrder,
@@ -58,7 +61,7 @@ const {
 const { effectiveQuantity } = require("../../common/utils/effective-quantity");
 const { loadPosVisibleHierarchy, offeringInPosHierarchy } = require("../../common/utils/pos-catalogue-visibility");
 
-const { createOrderSchema, confirmOrderSchema, recordPaymentSchema } = require("./request-objects");
+const { createOrderSchema, confirmOrderSchema, recordPaymentSchema, initiateNetsByReferenceSchema } = require("./request-objects");
 
 // ─── helpers ──────────────────────────────────────────────────────────────
 
@@ -690,6 +693,84 @@ async function getBookingDetail(req, res) {
 }
 
 /**
+ * Resolves a confirmed booking's lines into physical print tickets, per the
+ * Print Split Setting master (models/print-split-settings) and each
+ * line's Item/Service.isDeityMappingRequired -> Deity.printingGroup /
+ * Item-or-Service.printingGroup resolution rule. All the actual
+ * grouping/resolution logic lives in common/utils/ticket-grouping.js (pure,
+ * independently unit-tested) — this function only loads what that logic
+ * needs and shapes the result.
+ *
+ * A plain function, not an HTTP handler, deliberately: it has two callers
+ * with two different auth stories. GET /pos/booking/bookings/:id/ticket-groups
+ * below is admin-JWT-gated, for a human (e.g. a future reprint screen).
+ * controllers/payments/nets/callback (shared-secret-gated, no admin
+ * session — it's the local EXE calling in, not a logged-in operator) calls
+ * this SAME function directly, in-process, and inlines the result into its
+ * own response — so the EXE gets what it needs to print in the one
+ * already-authenticated round trip it makes, without needing an admin JWT
+ * it has no way to hold.
+ *
+ * @returns {Promise<{ticketGroups, receipt, temple, customer, splitMode}>}
+ */
+async function computeBookingTicketGroups(bookingId) {
+  if (!mongoose.isValidObjectId(bookingId)) throw "Invalid booking ID.";
+
+  const booking = await PosBooking.findOne(PosBooking.notDeletedFilter({ _id: bookingId })).populate({
+    path: "lines.deities",
+    select: "name tamilName printingGroup",
+    populate: { path: "printingGroup", select: "name" },
+  });
+  if (!booking) throw "Booking not found.";
+
+  const [setting, receiptTxn, entity] = await Promise.all([
+    PrintSplitSetting.findOne({}),
+    PosTransaction.findOne(PosTransaction.notDeletedFilter({ bookingId: booking._id })).sort({ transactionDate: 1 }).select("receiptNo"),
+    booking.entity ? findActiveEntityById(booking.entity) : Promise.resolve(null),
+  ]);
+  const splitMode = setting?.mode ?? "PRINT_GROUP_WISE";
+
+  // Batch-load every Item/Service referenced by this booking's lines in two
+  // queries total, not one per line.
+  const itemIds = booking.lines.filter((l) => l.refType === "Item").map((l) => l.refId);
+  const serviceIds = booking.lines.filter((l) => l.refType === "Service").map((l) => l.refId);
+  const [items, services] = await Promise.all([
+    itemIds.length
+      ? Item.find({ _id: { $in: itemIds } }).select("isDeityMappingRequired printingGroup tamilName").populate("printingGroup", "name")
+      : [],
+    serviceIds.length
+      ? Service.find({ _id: { $in: serviceIds } }).select("isDeityMappingRequired printingGroup tamilName").populate("printingGroup", "name")
+      : [],
+  ]);
+  const offeringsById = new Map([...items, ...services].map((doc) => [String(doc._id), doc]));
+
+  const units = booking.lines.flatMap((line) => resolveLineUnits(line, offeringsById.get(String(line.refId)), line.deities));
+  const ticketGroups = buildTicketGroups(units, splitMode);
+
+  return {
+    ticketGroups,
+    receipt: { receiptNo: receiptTxn?.receiptNo ?? null, bookingNumber: booking.bookingNumber, printedAt: new Date().toISOString() },
+    temple: entity ? { name: entity.templeName || entity.name, tamilName: entity.templeTamilName || "" } : null,
+    customer: booking.customerInfo,
+    splitMode,
+  };
+}
+
+/**
+ * GET /pos/booking/bookings/:id/ticket-groups — thin HTTP wrapper, for a
+ * logged-in admin (e.g. a reprint screen). See computeBookingTicketGroups
+ * above for the other caller.
+ */
+async function getBookingTicketGroups(req, res) {
+  try {
+    const result = await computeBookingTicketGroups(req.params.id);
+    return responseHandler({ res, response: result });
+  } catch (error) {
+    return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 400 : undefined });
+  }
+}
+
+/**
  * Appends one more "paid" PosTransaction row against an already-confirmed
  * PosBooking and recomputes its paymentStatus — the write both
  * recordBookingPayment (HTTP route, cash/manual top-up) and
@@ -751,6 +832,19 @@ async function recordBookingPayment(req, res) {
       if (!mode) throw "Payment mode not found or inactive.";
       paymentMode = mode._id;
       paymentModeName = mode.name;
+    }
+
+    // This route marks a payment "paid" the instant it's called — correct
+    // for Cash (the cashier already has the money in hand) but not for
+    // NETS/PayNow, which both require an actual terminal charge or a
+    // scanned QR first. Without this guard, picking NETS/PayNow here (e.g.
+    // the "Pay Again" balance top-up screen) silently confirmed a payment
+    // nobody ever made. Those modes have their own initiate routes
+    // (POST /pos/booking/nets/initiate, POST /payments/paynow/generate-qr)
+    // that must be used instead.
+    const normalizedModeName = paymentModeName.trim().toUpperCase();
+    if (normalizedModeName === "NETS" || normalizedModeName === "PAYNOW") {
+      throw `${paymentModeName} payments cannot be recorded directly — use its own initiate flow instead of confirming it as already paid.`;
     }
 
     const { transaction, amountPaid, balanceAmount } = await applyBookingPayment(booking, amount, {
@@ -864,7 +958,7 @@ async function createPendingPayment({ referenceId, amount: requestedAmount, paym
 async function buildPaynowQrForOrder({ referenceId, amount, processedBy }) {
   assertPaynowConfigured();
 
-  const paynowMode = await PaymentMode.findOne(PaymentMode.notDeletedFilter({ name: "PayNow", status: 1 }));
+  const paynowMode = await PaymentMode.findOne(PaymentMode.notDeletedFilter({ name: "PAYNOW", status: 1 }));
   if (!paynowMode) throw "PayNow is not configured as an available payment mode.";
 
   const { transaction } = await createPendingPayment({
@@ -888,6 +982,91 @@ async function buildPaynowQrForOrder({ referenceId, amount, processedBy }) {
   }
 
   return { amount: transaction.amount, qr: qrImage, engine };
+}
+
+/**
+ * The "Phase 3" NETS initiate step the comment above createOrder's NETS
+ * branch already refers to — createOrder leaves a NETS order "pending"
+ * with no PosTransaction at all (unlike PayNow, which gets one immediately
+ * via buildPaynowQrForOrder above), so nothing exists yet for
+ * dispatchPaymentConfirmation/confirmPosPayment to find and confirm. This
+ * is the missing piece: fixes the amount and creates the PENDING
+ * PosTransaction, exactly the way PayNow's own QR generation does, minus
+ * the QR itself (a NETS terminal needs no on-screen code — it's driven by
+ * the EXE emitting terminal:payment:nets with this same referenceId/amount).
+ *
+ * Works for both an order's first payment and a top-up on an
+ * already-confirmed booking, same as buildPaynowQrForOrder — see
+ * createPendingPayment's own doc comment.
+ */
+async function initiateNetsPayment({ referenceId, amount, processedBy }) {
+  const netsMode = await PaymentMode.findOne(PaymentMode.notDeletedFilter({ name: "NETS", status: 1 }));
+  if (!netsMode) throw "NETS is not configured as an available payment mode.";
+
+  const { transaction } = await createPendingPayment({
+    referenceId,
+    amount,
+    paymentMode: netsMode._id,
+    paymentModeName: netsMode.name,
+    processedBy,
+  });
+
+  return { referenceId, amount: transaction.amount, currency: "SGD" };
+}
+
+/**
+ * POST /pos/booking/orders/:id/nets/initiate
+ * HTTP wrapper — see initiateNetsPayment above for what this actually does.
+ * The response is exactly what the Nets-Service EXE's terminal:payment:nets
+ * socket call needs (orderId=referenceId, amount, currency).
+ */
+async function initiateNetsPaymentRoute(req, res) {
+  try {
+    const orderId = req.params.id;
+    if (!mongoose.isValidObjectId(orderId)) throw "Invalid order ID.";
+
+    const order = await PosOrder.findOne(PosOrder.notDeletedFilter({ _id: orderId }));
+    if (!order) throw "Order not found.";
+
+    const result = await initiateNetsPayment({
+      referenceId: order.referenceId,
+      amount: req.body?.amount,
+      processedBy: req.auth?.userId ?? null,
+    });
+
+    return responseHandler({ res, response: result, successMessage: "NETS payment initiated." });
+  } catch (error) {
+    return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 400 : undefined });
+  }
+}
+
+/**
+ * POST /pos/booking/nets/initiate — same as initiateNetsPaymentRoute above,
+ * but for a balance top-up on an ALREADY-CONFIRMED booking rather than a
+ * brand new order. The frontend's "Pay Again" screen only has the original
+ * booking's referenceId to work with (no PosOrder _id, since there's no
+ * order-create response to have gotten one from) — this is the missing
+ * piece that let NETS previously fall through to
+ * POST /pos/booking/bookings/:id/payments, the CASH/manual instant-confirm
+ * route, silently marking a NETS top-up "paid" with no terminal ever
+ * involved. Mirrors POST /payments/paynow/generate-qr's own referenceId-only
+ * shape for the exact same reason.
+ */
+async function initiateNetsByReferenceRoute(req, res) {
+  try {
+    const { error, value } = initiateNetsByReferenceSchema.validate(req.body ?? {});
+    if (error) throw error.details[0].message;
+
+    const result = await initiateNetsPayment({
+      referenceId: value.referenceId,
+      amount: value.amount,
+      processedBy: req.auth?.userId ?? null,
+    });
+
+    return responseHandler({ res, response: result, successMessage: "NETS payment initiated." });
+  } catch (error) {
+    return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 400 : undefined });
+  }
 }
 
 /**
@@ -997,7 +1176,17 @@ async function confirmPosPayment(referenceId, details = {}) {
   // for the same pending row safe.
   const claimed = await PosTransaction.findOneAndUpdate(
     { _id: pending._id, paymentStatus: "pending" },
-    { $set: { paymentStatus: "paid", gatewayReference: details.gatewayReference ?? null, processedBy: details.processedBy ?? null } },
+    {
+      $set: {
+        paymentStatus: "paid",
+        gatewayReference: details.gatewayReference ?? null,
+        processedBy: details.processedBy ?? null,
+        // Set only by controllers/pos-order-confirmation's manual admin
+        // path — undefined (and so left off `$set`) for a real gateway/
+        // terminal webhook, so this stays null on that path.
+        ...(details.manualConfirmationDetails !== undefined ? { manualConfirmationDetails: details.manualConfirmationDetails } : {}),
+      },
+    },
     { new: true }
   );
   if (!claimed) return { alreadyProcessed: true, transactionId: pending._id };
@@ -1047,9 +1236,12 @@ function registerPosOrderRoutes(r) {
   r.post("/orders", requirePermission("admin-booking", "fullAccess"), validateBody(createOrderSchema), createOrder);
   r.post("/orders/:id/confirm", requirePermission("admin-booking", "fullAccess"), confirmOrder);
   r.get("/orders/:id/status", requirePermission("admin-booking", "view"), getOrderStatus);
+  r.post("/orders/:id/nets/initiate", requirePermission("admin-booking", "fullAccess"), initiateNetsPaymentRoute);
+  r.post("/nets/initiate", requirePermission("admin-booking", "fullAccess"), initiateNetsByReferenceRoute);
 
   r.get("/bookings", requirePermission("pos-transactions", "view"), listBookings);
   r.get("/bookings/:id", requirePermission("pos-transactions", "view"), getBookingDetail);
+  r.get("/bookings/:id/ticket-groups", requirePermission("pos-transactions", "view"), getBookingTicketGroups);
 
   r.post(
     "/bookings/:id/payments",
@@ -1065,7 +1257,11 @@ module.exports = {
   // used by controllers/payments/paynow/generate-qr
   createPendingPayment,
   buildPaynowQrForOrder,
+  initiateNetsPayment,
   resolveOutstandingBalance,
+  // used by controllers/payments/nets/callback — see that function's own
+  // comment for why it's called in-process instead of over HTTP
+  computeBookingTicketGroups,
   // exposed for unit testing, same pattern controllers/pos/index.js uses
   createOrder,
   confirmOrder,
