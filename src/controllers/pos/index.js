@@ -78,6 +78,7 @@ const {
   consumeReservations,
   cancelReservations,
   getAvailability,
+  getAvailabilityBatch,
 } = require("./inventory-reservation");
 
 const {
@@ -485,50 +486,46 @@ async function listPosServices(req, res) {
  * POS-facing item/service payload looks like, instead of copies that drift.
  */
 async function decorateItems(items) {
-  return Promise.all(
-    items.map(async (item) => {
-      const avail = await getAvailability("Item", item._id);
-      return {
-        _id: item._id,
-        code: item.code,
-        name: item.name,
-        tamilName: item.tamilName,
-        salePrice: item.salePrice,
-        image: item.image || null,
-        isDeityMappingRequired: item.isDeityMappingRequired,
-        deityMapping: item.deityMapping,
-        isFamilyMembersRequired: item.isFamilyMembersRequired,
-        maxFamilyMembers: item.maxFamilyMembers,
-        minQuantity: item.minQuantity,
-        maxQuantity: item.maxQuantity,
-        categoryDetails: item.categoryDetails,
-        inventory: avail,
-      };
-    })
-  );
+  // One batched query for the whole page instead of getAvailability()'s two
+  // queries per item (see getAvailabilityBatch's own comment) — items[] here
+  // already carries currentStock/threshold/isInventoryApplicable from the
+  // caller's own .select(), so nothing is re-fetched.
+  const availByRefId = await getAvailabilityBatch("Item", items);
+  return items.map((item) => ({
+    _id: item._id,
+    code: item.code,
+    name: item.name,
+    tamilName: item.tamilName,
+    salePrice: item.salePrice,
+    image: item.image || null,
+    isDeityMappingRequired: item.isDeityMappingRequired,
+    deityMapping: item.deityMapping,
+    isFamilyMembersRequired: item.isFamilyMembersRequired,
+    maxFamilyMembers: item.maxFamilyMembers,
+    minQuantity: item.minQuantity,
+    maxQuantity: item.maxQuantity,
+    categoryDetails: item.categoryDetails,
+    inventory: availByRefId.get(String(item._id)),
+  }));
 }
 
 async function decorateServices(services) {
-  return Promise.all(
-    services.map(async (svc) => {
-      const avail = await getAvailability("Service", svc._id);
-      return {
-        _id: svc._id,
-        code: svc.code,
-        name: svc.name,
-        tamilName: svc.tamilName,
-        defaultSalePrice: svc.salePrice ?? 0,
-        image: svc.image || null,
-        categoryDetails: svc.categoryDetails,
-        isDeityMappingRequired: svc.isDeityMappingRequired,
-        deityMapping: svc.deityMapping,
-        isFamilyMembersRequired: svc.isFamilyMembersRequired,
-        maxFamilyMembers: svc.maxFamilyMembers,
-        sessionRequired: svc.sessionRequired,
-        inventory: avail,
-      };
-    })
-  );
+  const availByRefId = await getAvailabilityBatch("Service", services);
+  return services.map((svc) => ({
+    _id: svc._id,
+    code: svc.code,
+    name: svc.name,
+    tamilName: svc.tamilName,
+    defaultSalePrice: svc.salePrice ?? 0,
+    image: svc.image || null,
+    categoryDetails: svc.categoryDetails,
+    isDeityMappingRequired: svc.isDeityMappingRequired,
+    deityMapping: svc.deityMapping,
+    isFamilyMembersRequired: svc.isFamilyMembersRequired,
+    maxFamilyMembers: svc.maxFamilyMembers,
+    sessionRequired: svc.sessionRequired,
+    inventory: availByRefId.get(String(svc._id)),
+  }));
 }
 
 /**
