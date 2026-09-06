@@ -59,6 +59,14 @@ itemSchema.plugin(auditablePlugin);
 
 itemSchema.index({ code: 1 }, activeUniqueIndexOptions({ collation: { locale: "en", strength: 2 } }));
 itemSchema.index({ status: 1, createdAt: -1 });
+// Matches the POS catalogue's actual query shape exactly (controllers/pos
+// listPosItems/getCatalogue: filter on status + posAvailability, sort by
+// name) — without this, Mongo could only use the index above as a partial
+// prefix match on `status` and had to filter posAvailability and sort by
+// name in memory on every request. Harmless against a small local dataset,
+// but a real cost once the database is a network hop away (Atlas) instead
+// of on the same machine as the backend.
+itemSchema.index({ status: 1, posAvailability: 1, name: 1 });
 
 // Every ref field indexed, including inside the categoryDetails array —
 // Mongoose supports indexing a dotted path into an array of subdocuments,

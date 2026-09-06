@@ -256,10 +256,68 @@ async function getAvailability(refType, refId) {
   return { isInventoryApplicable: true, currentStock, reservedQty, availableQty, threshold };
 }
 
+/**
+ * Batch version of getAvailability() for a listing page (the POS catalogue's
+ * item/service grid) — one reservation-sum aggregation covering every ref on
+ * the page, instead of getAvailability()'s own two queries (a re-fetch of
+ * the ref doc, then a per-ref reservation sum) run once per row.
+ *
+ * A 50-item page previously meant up to 100 extra round trips to Mongo on
+ * top of the listing query itself — negligible against a local database,
+ * but each one pays a real network round trip once the backend (Render) and
+ * the database (Atlas) are no longer on the same machine, which is exactly
+ * why the catalogue loaded fine locally but visibly slower once deployed.
+ *
+ * `refs` are the already-loaded documents from the caller's own listing
+ * query — their currentStock/threshold/inventory-flag fields are reused
+ * directly rather than re-fetched, since the caller already selected them.
+ *
+ * @param {"Item"|"Service"} refType
+ * @param {Array<{_id, currentStock?, threshold?, thresholdCount?, isInventoryApplicable?, isInventoryRequired?}>} refs
+ * @returns {Promise<Map<string, {isInventoryApplicable, currentStock, reservedQty, availableQty, threshold}>>}
+ *   Keyed by `String(ref._id)`.
+ */
+async function getAvailabilityBatch(refType, refs) {
+  const flag = inventoryFlag(refType);
+  const tField = thresholdField(refType);
+
+  const applicableRefs = refs.filter((r) => r[flag]);
+  let reservedByRefId = new Map();
+  if (applicableRefs.length > 0) {
+    const rows = await InventoryReservation.aggregate([
+      {
+        $match: {
+          refType,
+          refId: { $in: applicableRefs.map((r) => r._id) },
+          status: "active",
+          expiresAt: { $gt: new Date() },
+        },
+      },
+      { $group: { _id: "$refId", total: { $sum: "$quantity" } } },
+    ]);
+    reservedByRefId = new Map(rows.map((r) => [String(r._id), r.total]));
+  }
+
+  const result = new Map();
+  for (const ref of refs) {
+    if (!ref[flag]) {
+      result.set(String(ref._id), { isInventoryApplicable: false, currentStock: 0, reservedQty: 0, availableQty: Infinity, threshold: 0 });
+      continue;
+    }
+    const currentStock = ref.currentStock ?? 0;
+    const threshold = ref[tField] ?? 0;
+    const reservedQty = reservedByRefId.get(String(ref._id)) ?? 0;
+    const availableQty = Math.max(0, currentStock - threshold - reservedQty);
+    result.set(String(ref._id), { isInventoryApplicable: true, currentStock, reservedQty, availableQty, threshold });
+  }
+  return result;
+}
+
 module.exports = {
   placeReservationsForOrder,
   consumeReservations,
   cancelReservations,
   getAvailability,
+  getAvailabilityBatch,
   RESERVATION_TTL_MS,
 };
