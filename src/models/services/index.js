@@ -62,6 +62,10 @@ serviceSchema.plugin(auditablePlugin);
 
 serviceSchema.index({ code: 1 }, activeUniqueIndexOptions({ collation: { locale: "en", strength: 2 } }));
 serviceSchema.index({ status: 1, createdAt: -1 });
+// Same reasoning as Item's matching index — covers listPosServices/
+// getCatalogue's actual filter (status + isPosAvailable) and sort (name) in
+// one index instead of an in-memory sort on every request.
+serviceSchema.index({ status: 1, isPosAvailable: 1, name: 1 });
 
 // Every ref field indexed, including inside the categoryDetails array and the
 // deityMapping array — Mongoose supports indexing a dotted/array path into
