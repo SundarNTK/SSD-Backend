@@ -843,7 +843,7 @@ async function recordBookingPayment(req, res) {
     // (POST /pos/booking/nets/initiate, POST /payments/paynow/generate-qr)
     // that must be used instead.
     const normalizedModeName = paymentModeName.trim().toUpperCase();
-    if (normalizedModeName === "NETS" || normalizedModeName === "PAYNOW") {
+    if (normalizedModeName === "NETS" || normalizedModeName === "PAYNOW" || normalizedModeName === "CREDIT CARD") {
       throw `${paymentModeName} payments cannot be recorded directly — use its own initiate flow instead of confirming it as already paid.`;
     }
 
@@ -992,82 +992,108 @@ async function buildPaynowQrForOrder({ referenceId, amount, processedBy }) {
  * dispatchPaymentConfirmation/confirmPosPayment to find and confirm. This
  * is the missing piece: fixes the amount and creates the PENDING
  * PosTransaction, exactly the way PayNow's own QR generation does, minus
- * the QR itself (a NETS terminal needs no on-screen code — it's driven by
- * the EXE emitting terminal:payment:nets with this same referenceId/amount).
+ * the QR itself (a terminal payment needs no on-screen code — it's driven
+ * by the EXE emitting terminal:payment:nets or terminal:payment:credit_card
+ * with this same referenceId/amount).
+ *
+ * Shared by both NETS and Credit Card — both are "send this to the same
+ * physical terminal, wait for its result" flows on the Nets-Service EXE
+ * side (see its websocket-handler.js: both command types funnel into the
+ * same handleTerminalPayment, differing only by a paymentType/isCreditTxn
+ * flag), so the only thing that actually differs here is which PaymentMode
+ * document the pending transaction gets tagged with.
  *
  * Works for both an order's first payment and a top-up on an
  * already-confirmed booking, same as buildPaynowQrForOrder — see
  * createPendingPayment's own doc comment.
  */
-async function initiateNetsPayment({ referenceId, amount, processedBy }) {
-  const netsMode = await PaymentMode.findOne(PaymentMode.notDeletedFilter({ name: "NETS", status: 1 }));
-  if (!netsMode) throw "NETS is not configured as an available payment mode.";
+async function initiateTerminalPayment({ referenceId, amount, processedBy, modeName }) {
+  const mode = await PaymentMode.findOne(PaymentMode.notDeletedFilter({ name: modeName, status: 1 }));
+  if (!mode) throw `${modeName} is not configured as an available payment mode.`;
 
   const { transaction } = await createPendingPayment({
     referenceId,
     amount,
-    paymentMode: netsMode._id,
-    paymentModeName: netsMode.name,
+    paymentMode: mode._id,
+    paymentModeName: mode.name,
     processedBy,
   });
 
   return { referenceId, amount: transaction.amount, currency: "SGD" };
 }
 
-/**
- * POST /pos/booking/orders/:id/nets/initiate
- * HTTP wrapper — see initiateNetsPayment above for what this actually does.
- * The response is exactly what the Nets-Service EXE's terminal:payment:nets
- * socket call needs (orderId=referenceId, amount, currency).
- */
-async function initiateNetsPaymentRoute(req, res) {
-  try {
-    const orderId = req.params.id;
-    if (!mongoose.isValidObjectId(orderId)) throw "Invalid order ID.";
+async function initiateNetsPayment({ referenceId, amount, processedBy }) {
+  return initiateTerminalPayment({ referenceId, amount, processedBy, modeName: "NETS" });
+}
 
-    const order = await PosOrder.findOne(PosOrder.notDeletedFilter({ _id: orderId }));
-    if (!order) throw "Order not found.";
-
-    const result = await initiateNetsPayment({
-      referenceId: order.referenceId,
-      amount: req.body?.amount,
-      processedBy: req.auth?.userId ?? null,
-    });
-
-    return responseHandler({ res, response: result, successMessage: "NETS payment initiated." });
-  } catch (error) {
-    return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 400 : undefined });
-  }
+async function initiateCreditCardPayment({ referenceId, amount, processedBy }) {
+  return initiateTerminalPayment({ referenceId, amount, processedBy, modeName: "CREDIT CARD" });
 }
 
 /**
- * POST /pos/booking/nets/initiate — same as initiateNetsPaymentRoute above,
- * but for a balance top-up on an ALREADY-CONFIRMED booking rather than a
- * brand new order. The frontend's "Pay Again" screen only has the original
- * booking's referenceId to work with (no PosOrder _id, since there's no
- * order-create response to have gotten one from) — this is the missing
- * piece that let NETS previously fall through to
- * POST /pos/booking/bookings/:id/payments, the CASH/manual instant-confirm
- * route, silently marking a NETS top-up "paid" with no terminal ever
- * involved. Mirrors POST /payments/paynow/generate-qr's own referenceId-only
- * shape for the exact same reason.
+ * POST /pos/booking/orders/:id/nets/initiate and
+ * POST /pos/booking/orders/:id/credit-card/initiate
+ * HTTP wrapper — see initiateTerminalPayment above for what this actually
+ * does. The response is exactly what the Nets-Service EXE's
+ * terminal:payment:nets / terminal:payment:credit_card socket call needs
+ * (orderId=referenceId, amount, currency).
  */
-async function initiateNetsByReferenceRoute(req, res) {
-  try {
-    const { error, value } = initiateNetsByReferenceSchema.validate(req.body ?? {});
-    if (error) throw error.details[0].message;
+function makeInitiateTerminalPaymentRoute(initiator, label) {
+  return async function initiateTerminalPaymentRoute(req, res) {
+    try {
+      const orderId = req.params.id;
+      if (!mongoose.isValidObjectId(orderId)) throw "Invalid order ID.";
 
-    const result = await initiateNetsPayment({
-      referenceId: value.referenceId,
-      amount: value.amount,
-      processedBy: req.auth?.userId ?? null,
-    });
+      const order = await PosOrder.findOne(PosOrder.notDeletedFilter({ _id: orderId }));
+      if (!order) throw "Order not found.";
 
-    return responseHandler({ res, response: result, successMessage: "NETS payment initiated." });
-  } catch (error) {
-    return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 400 : undefined });
-  }
+      const result = await initiator({
+        referenceId: order.referenceId,
+        amount: req.body?.amount,
+        processedBy: req.auth?.userId ?? null,
+      });
+
+      return responseHandler({ res, response: result, successMessage: `${label} payment initiated.` });
+    } catch (error) {
+      return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 400 : undefined });
+    }
+  };
 }
+const initiateNetsPaymentRoute = makeInitiateTerminalPaymentRoute(initiateNetsPayment, "NETS");
+const initiateCreditCardPaymentRoute = makeInitiateTerminalPaymentRoute(initiateCreditCardPayment, "Credit Card");
+
+/**
+ * POST /pos/booking/nets/initiate and POST /pos/booking/credit-card/initiate
+ * — same as the routes above, but for a balance top-up on an
+ * ALREADY-CONFIRMED booking rather than a brand new order. The frontend's
+ * "Pay Again" screen only has the original booking's referenceId to work
+ * with (no PosOrder _id, since there's no order-create response to have
+ * gotten one from) — this is the missing piece that let NETS previously
+ * fall through to POST /pos/booking/bookings/:id/payments, the CASH/manual
+ * instant-confirm route, silently marking a top-up "paid" with no terminal
+ * ever involved. Mirrors POST /payments/paynow/generate-qr's own
+ * referenceId-only shape for the exact same reason.
+ */
+function makeInitiateTerminalPaymentByReferenceRoute(initiator, label) {
+  return async function initiateTerminalPaymentByReferenceRoute(req, res) {
+    try {
+      const { error, value } = initiateNetsByReferenceSchema.validate(req.body ?? {});
+      if (error) throw error.details[0].message;
+
+      const result = await initiator({
+        referenceId: value.referenceId,
+        amount: value.amount,
+        processedBy: req.auth?.userId ?? null,
+      });
+
+      return responseHandler({ res, response: result, successMessage: `${label} payment initiated.` });
+    } catch (error) {
+      return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 400 : undefined });
+    }
+  };
+}
+const initiateNetsByReferenceRoute = makeInitiateTerminalPaymentByReferenceRoute(initiateNetsPayment, "NETS");
+const initiateCreditCardByReferenceRoute = makeInitiateTerminalPaymentByReferenceRoute(initiateCreditCardPayment, "Credit Card");
 
 /**
  * Writes the PosBooking for an order's first payment when that payment's
@@ -1238,6 +1264,8 @@ function registerPosOrderRoutes(r) {
   r.get("/orders/:id/status", requirePermission("admin-booking", "view"), getOrderStatus);
   r.post("/orders/:id/nets/initiate", requirePermission("admin-booking", "fullAccess"), initiateNetsPaymentRoute);
   r.post("/nets/initiate", requirePermission("admin-booking", "fullAccess"), initiateNetsByReferenceRoute);
+  r.post("/orders/:id/credit-card/initiate", requirePermission("admin-booking", "fullAccess"), initiateCreditCardPaymentRoute);
+  r.post("/credit-card/initiate", requirePermission("admin-booking", "fullAccess"), initiateCreditCardByReferenceRoute);
 
   r.get("/bookings", requirePermission("pos-transactions", "view"), listBookings);
   r.get("/bookings/:id", requirePermission("pos-transactions", "view"), getBookingDetail);
@@ -1258,6 +1286,7 @@ module.exports = {
   createPendingPayment,
   buildPaynowQrForOrder,
   initiateNetsPayment,
+  initiateCreditCardPayment,
   resolveOutstandingBalance,
   // used by controllers/payments/nets/callback — see that function's own
   // comment for why it's called in-process instead of over HTTP
