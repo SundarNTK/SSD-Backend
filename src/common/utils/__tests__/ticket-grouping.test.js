@@ -154,14 +154,18 @@ describe("buildTicketGroups", () => {
     expect(nonDeityTicket.lines[0].name).toBe("Special Offering");
   });
 
-  test("devotees are de-duplicated within a merged ticket", () => {
-    const sameDevotee = { name: "Sundar", nakshatra: "Rohini" };
+  test("devotees stay attached to their own line, not merged across a combined ticket", () => {
+    const murugansDevotee = { name: "Arun", nakshatra: "Ardra" };
+    const durgasDevotee = { name: "Anjali", nakshatra: "Rohini" };
     const units = [
-      ...resolveLineUnits(line("Murugan Archana", "M", { devotees: [sameDevotee] }), { isDeityMappingRequired: true }, [deity("d1", "Murugan", "gA", "Group A")]),
-      ...resolveLineUnits(line("Durga Archana", "D", { devotees: [sameDevotee] }), { isDeityMappingRequired: true }, [deity("d2", "Durga", "gA", "Group A")]),
+      ...resolveLineUnits(line("Murugan Archana", "M", { devotees: [murugansDevotee] }), { isDeityMappingRequired: true }, [deity("d1", "Murugan", "gA", "Group A")]),
+      ...resolveLineUnits(line("Durga Archana", "D", { devotees: [durgasDevotee] }), { isDeityMappingRequired: true }, [deity("d2", "Durga", "gA", "Group A")]),
     ];
     const tickets = buildTicketGroups(units, "PRINT_GROUP_WISE");
     expect(tickets).toHaveLength(1);
-    expect(tickets[0].devotees).toEqual([sameDevotee]);
+    const murugansLine = tickets[0].lines.find((l) => l.deityName === "Murugan");
+    const durgasLine = tickets[0].lines.find((l) => l.deityName === "Durga");
+    expect(murugansLine.devotees).toEqual([murugansDevotee]);
+    expect(durgasLine.devotees).toEqual([durgasDevotee]);
   });
 });
