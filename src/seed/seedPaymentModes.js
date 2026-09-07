@@ -13,6 +13,7 @@ const DEFAULT_PAYMENT_MODES = [
   { name: "PAYNOW", description: "PayNow transfer", publicAvailability: true },
   { name: "DBS", description: "DBS bank transfer", publicAvailability: false },
   { name: "NETS", description: "NETS payment", publicAvailability: true },
+  { name: "CREDIT CARD", description: "Credit card payment via the NETS terminal", publicAvailability: true },
 ];
 
 // Maps each current name to the legacy, differently-cased name an

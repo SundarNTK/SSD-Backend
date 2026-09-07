@@ -125,6 +125,14 @@ function toTicketLine(unit) {
     lineTotal: unit.allocatedLineTotal,
     deityName: unit.deityName,
     deityTamilName: unit.deityTamilName,
+    // Kept per-line rather than deduplicated across the whole ticket group
+    // (the previous behaviour, on the group itself) — a Print-Group-Wise
+    // ticket can combine several deities'/items' lines onto one physical
+    // ticket, and each devotee belongs to a specific line, not the ticket
+    // as a whole. Flattening them onto the group lost that association: the
+    // printed ticket could no longer show which devotee's name belongs
+    // under which item/deity.
+    devotees: (unit.line.devotees || []).map((d) => ({ name: d.name, nakshatra: d.nakshatra })),
   };
 }
 
@@ -137,14 +145,10 @@ function groupUnitsByKey(units, keyFn, headerFn) {
   const totalCentsByKey = new Map();
   for (const unit of units) {
     const key = keyFn(unit);
-    if (!groups.has(key)) groups.set(key, { ...headerFn(unit), lines: [], devotees: [] });
+    if (!groups.has(key)) groups.set(key, { ...headerFn(unit), lines: [] });
     const group = groups.get(key);
     group.lines.push(toTicketLine(unit));
     totalCentsByKey.set(key, (totalCentsByKey.get(key) || 0) + Math.round((unit.allocatedLineTotal || 0) * 100));
-    for (const devotee of unit.line.devotees || []) {
-      const alreadyListed = group.devotees.some((d) => d.name === devotee.name && d.nakshatra === devotee.nakshatra);
-      if (!alreadyListed) group.devotees.push({ name: devotee.name, nakshatra: devotee.nakshatra });
-    }
   }
   for (const [key, group] of groups) {
     group.total = totalCentsByKey.get(key) / 100;
