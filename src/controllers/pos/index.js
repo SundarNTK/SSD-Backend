@@ -413,7 +413,10 @@ async function listPosItems(req, res) {
         .populate({ path: "categoryDetails.category", select: "name color", match: { isDeleted: false, status: 1, posVisibility: POS_VISIBLE } })
         .populate({ path: "categoryDetails.subCategory", select: "name", match: { isDeleted: false, status: 1, posVisibility: POS_VISIBLE } })
         .populate("generalLedger", "gstType")
-        .populate("deityMapping", "name")
+        // Sorted by admin-assigned display order (ties alphabetical) so the
+        // POS cart's Deities multi-select shows them in the configured
+        // order, not insertion order — see models/deities' displayOrder.
+        .populate({ path: "deityMapping", select: "name", options: { sort: { displayOrder: 1, name: 1 } } })
         .select("name tamilName code salePrice isInventoryApplicable currentStock threshold isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers minQuantity maxQuantity categoryDetails image")
         .sort({ name: 1 })
         .skip((page - 1) * pageSize)
@@ -464,7 +467,10 @@ async function listPosServices(req, res) {
       Service.find(filter)
         .populate({ path: "categoryDetails.category", select: "name color", match: { isDeleted: false, status: 1, posVisibility: POS_VISIBLE } })
         .populate({ path: "categoryDetails.subCategory", select: "name", match: { isDeleted: false, status: 1, posVisibility: POS_VISIBLE } })
-        .populate("deityMapping", "name")
+        // Sorted by admin-assigned display order (ties alphabetical) so the
+        // POS cart's Deities multi-select shows them in the configured
+        // order, not insertion order — see models/deities' displayOrder.
+        .populate({ path: "deityMapping", select: "name", options: { sort: { displayOrder: 1, name: 1 } } })
         .select("name tamilName code salePrice categoryDetails isInventoryRequired currentStock thresholdCount isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers sessionRequired image")
         .sort({ name: 1 })
         .skip((page - 1) * pageSize)
@@ -699,7 +705,10 @@ async function getCatalogue(req, res) {
       allUncategorizedItemIds.length
         ? decorateItems(
             await Item.find(Item.notDeletedFilter({ _id: { $in: allUncategorizedItemIds }, status: 1, posAvailability: true }))
-              .populate("deityMapping", "name")
+              // Sorted by admin-assigned display order (ties alphabetical) so the
+        // POS cart's Deities multi-select shows them in the configured
+        // order, not insertion order — see models/deities' displayOrder.
+        .populate({ path: "deityMapping", select: "name", options: { sort: { displayOrder: 1, name: 1 } } })
               .select(
                 "name tamilName code salePrice isInventoryApplicable currentStock threshold isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers minQuantity maxQuantity categoryDetails image"
               )
@@ -708,7 +717,10 @@ async function getCatalogue(req, res) {
       allUncategorizedServiceIds.length
         ? decorateServices(
             await Service.find(Service.notDeletedFilter({ _id: { $in: allUncategorizedServiceIds }, status: 1, isPosAvailable: true }))
-              .populate("deityMapping", "name")
+              // Sorted by admin-assigned display order (ties alphabetical) so the
+        // POS cart's Deities multi-select shows them in the configured
+        // order, not insertion order — see models/deities' displayOrder.
+        .populate({ path: "deityMapping", select: "name", options: { sort: { displayOrder: 1, name: 1 } } })
               .select(
                 "name tamilName code salePrice categoryDetails isInventoryRequired currentStock thresholdCount isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers sessionRequired image"
               )
@@ -752,7 +764,7 @@ async function listDeities(req, res) {
   try {
     const deities = await Deity.find(Deity.notDeletedFilter({ status: 1 }))
       .select("name tamilName")
-      .sort({ name: 1 });
+      .sort({ displayOrder: 1, name: 1 });
     return responseHandler({ res, response: { items: deities } });
   } catch (error) {
     return exceptionHandler({ res, error });
@@ -935,10 +947,11 @@ async function recheckLines(req, res) {
         // derivable from the plain name/code/price already returned here).
         let name, code, unitPrice, offeringMeta;
         if (refType === "Item") {
-          const item = await Item.findOne(Item.notDeletedFilter({ _id: refId, status: 1, posAvailability: true })).populate(
-            "deityMapping",
-            "name tamilName"
-          );
+          const item = await Item.findOne(Item.notDeletedFilter({ _id: refId, status: 1, posAvailability: true })).populate({
+            path: "deityMapping",
+            select: "name tamilName",
+            options: { sort: { displayOrder: 1, name: 1 } },
+          });
           if (!item || !offeringInPosHierarchy(item, hierarchy.categoryIds, hierarchy.subCategoryIds)) {
             return { ...base, available: false, reason: "No longer available for sale." };
           }
@@ -953,10 +966,11 @@ async function recheckLines(req, res) {
             maxFamilyMembers: item.maxFamilyMembers,
           };
         } else {
-          const svc = await Service.findOne(Service.notDeletedFilter({ _id: refId, status: 1, isPosAvailable: true })).populate(
-            "deityMapping",
-            "name tamilName"
-          );
+          const svc = await Service.findOne(Service.notDeletedFilter({ _id: refId, status: 1, isPosAvailable: true })).populate({
+            path: "deityMapping",
+            select: "name tamilName",
+            options: { sort: { displayOrder: 1, name: 1 } },
+          });
           if (!svc || !offeringInPosHierarchy(svc, hierarchy.categoryIds, hierarchy.subCategoryIds)) {
             return { ...base, available: false, reason: "No longer available for sale." };
           }

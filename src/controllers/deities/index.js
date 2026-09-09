@@ -21,6 +21,12 @@ const crud = makeCrudController(Deity, {
     { model: Service, field: "deityMapping", label: "Service" },
     { model: Event, field: "deityMapping", label: "Event" },
   ],
+  // Admin-assigned display order first, alphabetical among ties — see
+  // models/deities' own displayOrder field comment. Every other place a
+  // deity list is built (POS/admin deity pickers, ticket printing) sorts
+  // the same way, so Deity Master's own table matches what everyone else
+  // sees.
+  sort: { displayOrder: 1, name: 1 },
 });
 
 router.get("/deities", requirePermission("deities", "view"), crud.list);

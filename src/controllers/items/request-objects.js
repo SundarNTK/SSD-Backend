@@ -1,7 +1,17 @@
 const Joi = require("joi");
-const { UNITS_OF_MEASURE } = require("../../utilities/constants/units-of-measure");
 
 const objectId = Joi.string().hex().length(24);
+
+// Sourced from the Unit master (see models/units) as its unitCode — e.g.
+// "UN001" — not a fixed enum. Kept a plain string (not an objectId ref) to
+// match how the frontend already stores it (ItemPage.tsx's fetchUnitOptions
+// comment explains why: existing item data and every other place that reads
+// unitOfMeasure as a string — inventory, low-stock report, exports — keeps
+// working unchanged). This used to `.valid()` against a hardcoded
+// PCS/KG/GRAM/... list from before the Unit master existed, which rejected
+// every real unit code the moment that master's own values (e.g. "UN001")
+// stopped matching it.
+const unitOfMeasureField = Joi.string().trim().max(20);
 
 // subCategory is optional — a row can map an item to a Category alone, with
 // no specific SubCategory (see models/items categoryDetailSchema).
@@ -69,10 +79,7 @@ const createSchema = Joi.object({
   categoryDetails: Joi.array().items(categoryDetailEntry).default([]),
 
   isInventoryApplicable: Joi.boolean().default(false),
-  unitOfMeasure: Joi.string()
-    .valid(...UNITS_OF_MEASURE)
-    .allow(null)
-    .default(null),
+  unitOfMeasure: unitOfMeasureField.allow(null).default(null),
   threshold: Joi.number().integer().min(0).default(0),
   minQuantity: Joi.number().integer().min(1).default(1),
   maxQuantity: Joi.number().integer().min(0).default(0),
@@ -103,9 +110,7 @@ const updateSchema = Joi.object({
   categoryDetails: Joi.array().items(categoryDetailEntry),
 
   isInventoryApplicable: Joi.boolean(),
-  unitOfMeasure: Joi.string()
-    .valid(...UNITS_OF_MEASURE)
-    .allow(null),
+  unitOfMeasure: unitOfMeasureField.allow(null),
   threshold: Joi.number().integer().min(0),
   minQuantity: Joi.number().integer().min(1),
   maxQuantity: Joi.number().integer().min(0),
