@@ -32,6 +32,7 @@ const mongoose = require("mongoose");
 const requirePermission = require("../../common/middleware/require-permission");
 const validateBody = require("../../common/middleware/validate");
 const { resolveGstRate } = require("../../common/utils/gst-rate");
+const { sortLineDeities } = require("../../common/utils/sort-line-deities");
 const { responseHandler, exceptionHandler } = require("../../utilities/handlers");
 const { nextSequence } = require("../../common/utils/sequence");
 const { withUniqueReferenceId, ORIGIN_PREFIXES } = require("../../common/utils/payment-reference");
@@ -474,12 +475,14 @@ async function confirmOrder(req, res) {
     if (order.orderStatus === "confirmed") {
       const existing = await PosBooking.findById(order.bookingId)
         .populate("customer", "customerCode name email mobileNumber")
-        // Admin-assigned PRINT order (ties alphabetical) — this response
-        // feeds the printed/on-screen receipt, so it uses printOrder, not
-        // the displayOrder selection lists use — see models/deities.
-        .populate({ path: "lines.deities", select: "name", options: { sort: { printOrder: 1, name: 1 } } })
+        // Print order, not display order — this response feeds the
+        // printed/on-screen receipt (see models/deities' printOrder
+        // field). Sorted in JS below — Mongoose can't apply a populate
+        // `sort` to a path nested inside a document array like this one.
+        .populate({ path: "lines.deities", select: "name printOrder" })
         .populate("bookedBy", "name email");
       if (!existing) throw "Booking record not found for this confirmed order.";
+      sortLineDeities(existing, "printOrder");
       return responseHandler({
         res,
         response: await buildConfirmedOrderResponse(order, existing),
@@ -527,12 +530,12 @@ async function getOrderStatus(req, res) {
     if (order.orderStatus === "confirmed") {
       const booking = await PosBooking.findById(order.bookingId)
         .populate("customer", "customerCode name email mobileNumber")
-        // Admin-assigned PRINT order (ties alphabetical) — this response
-        // feeds the printed/on-screen receipt, so it uses printOrder, not
-        // the displayOrder selection lists use — see models/deities.
-        .populate({ path: "lines.deities", select: "name", options: { sort: { printOrder: 1, name: 1 } } })
+        // Print order, not display order — see the matching comment in
+        // confirmOrder above.
+        .populate({ path: "lines.deities", select: "name printOrder" })
         .populate("bookedBy", "name email");
       if (!booking) throw "Booking record not found for this confirmed order.";
+      sortLineDeities(booking, "printOrder");
       return responseHandler({ res, response: await buildConfirmedOrderResponse(order, booking) });
     }
 
@@ -653,10 +656,8 @@ async function getBookingDetail(req, res) {
         .populate("customer", "customerCode name email mobileNumber")
         .populate("orderId", "orderNumber referenceId orderStatus")
         .populate("paymentMode", "name")
-        // Admin-assigned PRINT order (ties alphabetical) — this response
-        // feeds the printed/on-screen receipt, so it uses printOrder, not
-        // the displayOrder selection lists use — see models/deities.
-        .populate({ path: "lines.deities", select: "name", options: { sort: { printOrder: 1, name: 1 } } })
+        // Print order, not display order — see confirmOrder's comment above.
+        .populate({ path: "lines.deities", select: "name printOrder" })
         .populate("bookedBy", "name email"),
       // paymentStatus: "paid" only — this is the receipt's payment history,
       // and a pending/cancelled/failed/expired attempt (e.g. a QR that was
@@ -670,6 +671,7 @@ async function getBookingDetail(req, res) {
     ]);
 
     if (!booking) throw "Booking not found.";
+    sortLineDeities(booking, "printOrder");
 
     const amountPaid = sumPaidAmount(transactions);
 
@@ -713,13 +715,14 @@ async function computeBookingTicketGroups(bookingId) {
 
   const booking = await PosBooking.findOne(PosBooking.notDeletedFilter({ _id: bookingId })).populate({
     path: "lines.deities",
-    select: "name tamilName printingGroup",
-    // Admin-assigned PRINT order (ties alphabetical) — determines the
-    // order deity-wise tickets print in for a multi-deity line (see
-    // models/deities' printOrder field).
-    options: { sort: { printOrder: 1, name: 1 } },
+    select: "name tamilName printingGroup printOrder",
     populate: { path: "printingGroup", select: "name" },
   });
+  // Determines the order deity-wise tickets print in for a multi-deity
+  // line (see models/deities' printOrder field) — sorted here, in JS, not
+  // via the populate above: Mongoose can't apply a populate `sort` to a
+  // path nested inside a document array like lines.deities.
+  sortLineDeities(booking, "printOrder");
   if (!booking) throw "Booking not found.";
 
   const [setting, receiptTxn, entity] = await Promise.all([
