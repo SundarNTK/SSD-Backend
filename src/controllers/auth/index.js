@@ -1,6 +1,7 @@
 const express = require("express");
 const env = require("../../config/env");
 const validateBody = require("../../common/middleware/validate");
+const authGuard = require("../../common/middleware/auth-guard");
 const { authLimiter } = require("../../common/middleware/rate-limit");
 const { responseHandler, exceptionHandler } = require("../../utilities/handlers");
 const { hashPassword, comparePassword, assertStrongPassword } = require("../../common/utils/password");
@@ -24,6 +25,7 @@ const {
   forgotPasswordSchema,
   resetPasswordSchema,
   registerSchema,
+  paginationCountSchema,
 } = require("./request-objects");
 
 async function login(req, res) {
@@ -256,6 +258,32 @@ async function resetPassword(req, res) {
   }
 }
 
+/**
+ * Saves the caller's own "rows per page" choice for every Master list screen
+ * (Item Master, Service Master, Deity Master, ...) — a self-service update,
+ * not a User Master admin action, so it's scoped to req.auth.userId (the
+ * caller's own account) rather than taking an :id param. Rides home on the
+ * session user (toSessionUser(), see models/users) so it's already there on
+ * every future login, on any device — not just remembered in this browser.
+ */
+async function updatePaginationCount(req, res) {
+  try {
+    const user = await User.findOneAndUpdate(
+      User.notDeletedFilter({ _id: req.auth.userId }),
+      { paginationCount: req.body.paginationCount },
+      { new: true, runValidators: true }
+    );
+    if (!user) throw "Account not found.";
+    return responseHandler({
+      res,
+      response: { paginationCount: user.paginationCount },
+      successMessage: "Preference saved.",
+    });
+  } catch (error) {
+    return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 404 : undefined });
+  }
+}
+
 // Mounted at /auth — see routes/index.js for why the prefix lives there.
 const router = express.Router();
 
@@ -275,5 +303,7 @@ router.get("/reset-password/:token", authLimiter, resetTokenInfo);
 router.post("/activate", authLimiter, validateBody(activateSchema), activate);
 router.post("/forgot-password", authLimiter, validateBody(forgotPasswordSchema), forgotPassword);
 router.post("/reset-password", authLimiter, validateBody(resetPasswordSchema), resetPassword);
+
+router.put("/pagination-count", authGuard, validateBody(paginationCountSchema), updatePaginationCount);
 
 module.exports = router;

@@ -33,9 +33,37 @@ const authLimiter = rateLimit({
     }),
 });
 
+// The customer-display tablet (PosCustomerDisplayPage) polls this one route
+// every 700ms for as long as a counter is open — that's ~1,280 requests in
+// 15 minutes from a single IP, well past apiLimiter's general 300 budget by
+// design. Without this exemption every display would 429 itself out after
+// under 4 minutes of normal use. Matched on the path Express hands this
+// middleware — already stripped of the API_PREFIX mount — not the full URL.
+const DISPLAY_POLL_PATTERN = /^\/pos-display\/session\/[^/]+$/;
+function isDisplayPoll(req) {
+  return req.method === "GET" && DISPLAY_POLL_PATTERN.test(req.path);
+}
+
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: isDisplayPoll,
+  handler: (req, res) =>
+    exceptionHandler({
+      res,
+      error: "Too many requests. Please slow down and try again shortly.",
+      statusCode: 429,
+    }),
+});
+
+// Sized for sustained 700ms polling (see isDisplayPoll above) with real
+// headroom, not left unlimited — a genuinely runaway client still gets
+// capped, just at a ceiling normal use never approaches.
+const displayPollLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 3000,
   standardHeaders: true,
   legacyHeaders: false,
   handler: (req, res) =>
@@ -46,4 +74,4 @@ const apiLimiter = rateLimit({
     }),
 });
 
-module.exports = { authLimiter, apiLimiter };
+module.exports = { authLimiter, apiLimiter, displayPollLimiter };

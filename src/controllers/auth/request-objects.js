@@ -50,4 +50,19 @@ const resetPasswordSchema = Joi.object({
   }),
 });
 
-module.exports = { loginSchema, activateSchema, forgotPasswordSchema, resetPasswordSchema, registerSchema };
+// Kept in lockstep with the User model's own `paginationCount` enum and the
+// frontend's DataTable.tsx DEFAULT_PAGE_SIZE_OPTIONS — all three lists must
+// agree, or a value valid at one layer could get silently rejected (or
+// silently accepted then rejected by the model) at another.
+const paginationCountSchema = Joi.object({
+  paginationCount: Joi.number().valid(10, 25, 50, 100).required(),
+});
+
+module.exports = {
+  loginSchema,
+  activateSchema,
+  forgotPasswordSchema,
+  resetPasswordSchema,
+  registerSchema,
+  paginationCountSchema,
+};

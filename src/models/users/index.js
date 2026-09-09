@@ -69,6 +69,17 @@ const userSchema = new mongoose.Schema({
   mobileChangeOtpExpiresAt: { type: Date, default: null },
 
   lastLoginAt: { type: Date, default: null },
+
+  // How many rows this user last chose to see per page on any Master list
+  // screen (Item Master, Service Master, Deity Master, ...) — set once here
+  // and every list screen in the Admin Panel opens at this value, including
+  // after a fresh login on a different device, since it rides home on the
+  // session user (see toSessionUser() below) rather than living in
+  // per-browser storage. Restricted to the same options the page-size
+  // selector itself offers (see SSD-Frontend's DataTable.tsx
+  // DEFAULT_PAGE_SIZE_OPTIONS) so a stray value can never end up requesting
+  // an unsupported page size.
+  paginationCount: { type: Number, enum: [10, 25, 50, 100], default: 10 },
 });
 
 userSchema.plugin(auditablePlugin);
@@ -115,6 +126,7 @@ userSchema.methods.toSessionUser = function toSessionUser() {
     profileImage: this.profileImage,
     posAccess: this.posAccess,
     entityId: defaultAssignment ? String(defaultAssignment.entity) : null,
+    paginationCount: this.paginationCount,
   };
 };
 

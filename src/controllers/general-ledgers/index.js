@@ -8,13 +8,13 @@ const GeneralLedger = require("../../models/general-ledgers");
 const GlGroup = require("../../models/gl-groups");
 const Item = require("../../models/items");
 const Service = require("../../models/services");
+const { canonicalGstType } = require("../../utilities/constants/gst-types");
 const { createSchema, updateSchema } = require("./request-objects");
 
 const POPULATE = [
-  { path: "gstType", select: "type percentage code" },
-  { path: "groupLevel1", select: "name" },
-  { path: "groupLevel2", select: "name" },
-  { path: "groupLevel3", select: "name" },
+  { path: "groupLevel1", select: "name code" },
+  { path: "groupLevel2", select: "name code" },
+  { path: "groupLevel3", select: "name code" },
 ];
 
 /**
@@ -41,7 +41,8 @@ async function assertGroupChainValid({ groupLevel1, groupLevel2, groupLevel3 }) 
 async function create(req, res) {
   try {
     await assertGroupChainValid(req.body);
-    const doc = await GeneralLedger.create({ ...req.body, createdBy: req.auth?.userId || null });
+    const body = { ...req.body, gstType: canonicalGstType(req.body.gstType) };
+    const doc = await GeneralLedger.create({ ...body, createdBy: req.auth?.userId || null });
     const populated = await doc.populate(POPULATE);
     return responseHandler({ res, response: populated, successMessage: "Created successfully.", statusCode: 201 });
   } catch (error) {
@@ -66,7 +67,8 @@ async function update(req, res) {
       await assertGroupChainValid(merged);
     }
 
-    Object.assign(existing, req.body, { updatedBy: req.auth?.userId || null });
+    const body = req.body.gstType !== undefined ? { ...req.body, gstType: canonicalGstType(req.body.gstType) } : req.body;
+    Object.assign(existing, body, { updatedBy: req.auth?.userId || null });
     await existing.save();
     const populated = await existing.populate(POPULATE);
     return responseHandler({ res, response: populated, successMessage: "Updated successfully." });

@@ -18,5 +18,8 @@ gstSchema.plugin(auditablePlugin);
 
 gstSchema.index({ code: 1 }, activeUniqueIndexOptions({ collation: { locale: "en", strength: 2 } }));
 gstSchema.index({ status: 1, createdAt: -1 });
+// Backs both the overlap check (controllers/gst) and the applicable-rate
+// lookup by type + document date (common/utils/gst-rate.js).
+gstSchema.index({ type: 1, status: 1, effectiveStartDate: 1 });
 
 module.exports = mongoose.model("Gst", gstSchema);

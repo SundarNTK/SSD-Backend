@@ -12,6 +12,7 @@
  *   5. indexes resynced
  *   6. `portal` backfilled on Order/Booking rows that predate the field
  *   7. Service.salePrice backfilled from each row's old per-category price
+ *   8. GlGroup.code backfilled, then GlGroup indexes synced
  */
 require("dotenv").config();
 const mongoose = require("mongoose");
@@ -27,6 +28,8 @@ const EmailTemplate = require("../models/email-templates");
 const EmailTemplateMapping = require("../models/email-template-mappings");
 const { Order } = require("../models/orders");
 const { Booking } = require("../models/bookings");
+const GlGroup = require("../models/gl-groups");
+const { backfillMissingGlGroupCodes } = require("../common/utils/gl-group-code");
 
 // Entity is excluded on purpose: it carries its own UUID `uid` predating the
 // shared 10-character format, and rewriting it would break any reference.
@@ -141,6 +144,13 @@ async function backfillServiceSalePrice() {
   if (!services.length) console.log("  (all services already have a top-level salePrice)");
 }
 
+async function backfillGlGroupCodes() {
+  const assigned = await backfillMissingGlGroupCodes(GlGroup);
+  console.log(`  GlGroup: ${assigned.length} code(s) assigned${assigned.length ? "" : " (already current)"}`);
+  await GlGroup.syncIndexes();
+  console.log("  GlGroup: indexes synced");
+}
+
 async function run() {
   await connectDatabase();
 
@@ -177,6 +187,9 @@ async function run() {
 
   console.log("\n>>> 7. Backfilling Service.salePrice");
   await backfillServiceSalePrice();
+
+  console.log("\n>>> 8. Backfilling GlGroup.code");
+  await backfillGlGroupCodes();
 
   console.log("\n>>> Migration complete.\n");
   process.exit(0);

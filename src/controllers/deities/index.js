@@ -22,10 +22,11 @@ const crud = makeCrudController(Deity, {
     { model: Event, field: "deityMapping", label: "Event" },
   ],
   // Admin-assigned display order first, alphabetical among ties — see
-  // models/deities' own displayOrder field comment. Every other place a
-  // deity list is built (POS/admin deity pickers, ticket printing) sorts
-  // the same way, so Deity Master's own table matches what everyone else
-  // sees.
+  // models/deities' own displayOrder field comment. Every deity SELECTION
+  // list elsewhere (POS/admin deity pickers, Item/Service/Event deity
+  // mapping) sorts the same way, so Deity Master's own table matches what
+  // an admin picking a deity sees everywhere else. Ticket PRINTING order
+  // is the separate printOrder field instead — see controllers/pos-orders.
   sort: { displayOrder: 1, name: 1 },
 });
 
