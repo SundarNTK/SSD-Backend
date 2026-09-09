@@ -31,12 +31,13 @@ async function list(req, res) {
     if (req.query.level2) filter.level2 = req.query.level2;
     if (req.query.status !== undefined) filter.status = Number(req.query.status);
     if (req.query.search) {
-      filter.name = new RegExp(escapeRegex(req.query.search.trim()), "i");
+      const regex = new RegExp(escapeRegex(req.query.search.trim()), "i");
+      filter.$or = [{ name: regex }, { code: regex }];
     }
 
     let query = GlGroup.find(filter).sort({ createdAt: -1 }).skip((page - 1) * pageSize).limit(pageSize);
-    if (level >= 2) query = query.populate("level1", "name");
-    if (level === 3) query = query.populate("level2", "name");
+    if (level >= 2) query = query.populate("level1", "name code");
+    if (level === 3) query = query.populate("level2", "name code");
 
     const [items, total] = await Promise.all([query.exec(), GlGroup.countDocuments(filter)]);
     return responseHandler({ res, response: { items, total, page, pageSize } });
@@ -68,10 +69,39 @@ async function create(req, res) {
     return responseHandler({ res, response: doc, successMessage: "Created successfully.", statusCode: 201 });
   } catch (error) {
     if (error?.code === 11000) {
-      return exceptionHandler({ res, error: "A group with this name already exists at this level.", statusCode: 409 });
+      return exceptionHandler({ res, error: duplicateGroupMessage(error), statusCode: 409 });
     }
     return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 400 : undefined });
   }
+}
+
+async function update(req, res) {
+  try {
+    const body = { ...req.body, updatedBy: req.auth?.userId || null };
+    delete body.code;
+    delete body.level;
+    delete body.level1;
+    delete body.level2;
+
+    const doc = await GlGroup.findOneAndUpdate(
+      GlGroup.notDeletedFilter({ _id: req.params.id }),
+      body,
+      { new: true, runValidators: true }
+    );
+    if (!doc) throw "Record not found.";
+    return responseHandler({ res, response: doc, successMessage: "Updated successfully." });
+  } catch (error) {
+    if (error?.code === 11000) {
+      return exceptionHandler({ res, error: duplicateGroupMessage(error), statusCode: 409 });
+    }
+    return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 404 : undefined });
+  }
+}
+
+function duplicateGroupMessage(error) {
+  const keys = Object.keys(error?.keyPattern || error?.keyValue || {});
+  if (keys.includes("code")) return "A GL group with this code already exists.";
+  return "A group with this name already exists at this level.";
 }
 
 // Mounted at /masters — see routes/index.js (authGuard/adminOnly now applied
@@ -93,7 +123,7 @@ const crud = makeCrudController(GlGroup, {
 
 router.get("/gl-groups", requirePermission("gl-groups", "view"), list);
 router.post("/gl-groups", requirePermission("gl-groups", "fullAccess"), validateBody(createSchema), create);
-router.put("/gl-groups/:id", requirePermission("gl-groups", "edit"), validateBody(updateSchema), crud.update);
+router.put("/gl-groups/:id", requirePermission("gl-groups", "edit"), validateBody(updateSchema), update);
 router.delete("/gl-groups/:id", requirePermission("gl-groups", "fullAccess"), crud.remove);
 
 module.exports = router;

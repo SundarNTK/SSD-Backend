@@ -474,9 +474,10 @@ async function confirmOrder(req, res) {
     if (order.orderStatus === "confirmed") {
       const existing = await PosBooking.findById(order.bookingId)
         .populate("customer", "customerCode name email mobileNumber")
-        // Admin-assigned display order (ties alphabetical) — see
-        // models/deities' displayOrder field.
-        .populate({ path: "lines.deities", select: "name", options: { sort: { displayOrder: 1, name: 1 } } })
+        // Admin-assigned PRINT order (ties alphabetical) — this response
+        // feeds the printed/on-screen receipt, so it uses printOrder, not
+        // the displayOrder selection lists use — see models/deities.
+        .populate({ path: "lines.deities", select: "name", options: { sort: { printOrder: 1, name: 1 } } })
         .populate("bookedBy", "name email");
       if (!existing) throw "Booking record not found for this confirmed order.";
       return responseHandler({
@@ -526,9 +527,10 @@ async function getOrderStatus(req, res) {
     if (order.orderStatus === "confirmed") {
       const booking = await PosBooking.findById(order.bookingId)
         .populate("customer", "customerCode name email mobileNumber")
-        // Admin-assigned display order (ties alphabetical) — see
-        // models/deities' displayOrder field.
-        .populate({ path: "lines.deities", select: "name", options: { sort: { displayOrder: 1, name: 1 } } })
+        // Admin-assigned PRINT order (ties alphabetical) — this response
+        // feeds the printed/on-screen receipt, so it uses printOrder, not
+        // the displayOrder selection lists use — see models/deities.
+        .populate({ path: "lines.deities", select: "name", options: { sort: { printOrder: 1, name: 1 } } })
         .populate("bookedBy", "name email");
       if (!booking) throw "Booking record not found for this confirmed order.";
       return responseHandler({ res, response: await buildConfirmedOrderResponse(order, booking) });
@@ -651,9 +653,10 @@ async function getBookingDetail(req, res) {
         .populate("customer", "customerCode name email mobileNumber")
         .populate("orderId", "orderNumber referenceId orderStatus")
         .populate("paymentMode", "name")
-        // Admin-assigned display order (ties alphabetical) — see
-        // models/deities' displayOrder field.
-        .populate({ path: "lines.deities", select: "name", options: { sort: { displayOrder: 1, name: 1 } } })
+        // Admin-assigned PRINT order (ties alphabetical) — this response
+        // feeds the printed/on-screen receipt, so it uses printOrder, not
+        // the displayOrder selection lists use — see models/deities.
+        .populate({ path: "lines.deities", select: "name", options: { sort: { printOrder: 1, name: 1 } } })
         .populate("bookedBy", "name email"),
       // paymentStatus: "paid" only — this is the receipt's payment history,
       // and a pending/cancelled/failed/expired attempt (e.g. a QR that was
@@ -711,10 +714,10 @@ async function computeBookingTicketGroups(bookingId) {
   const booking = await PosBooking.findOne(PosBooking.notDeletedFilter({ _id: bookingId })).populate({
     path: "lines.deities",
     select: "name tamilName printingGroup",
-    // Admin-assigned display order (ties alphabetical) — determines the
-    // order deity-wise tickets print in for a multi-deity line, same as
-    // every other deity listing (see models/deities' displayOrder field).
-    options: { sort: { displayOrder: 1, name: 1 } },
+    // Admin-assigned PRINT order (ties alphabetical) — determines the
+    // order deity-wise tickets print in for a multi-deity line (see
+    // models/deities' printOrder field).
+    options: { sort: { printOrder: 1, name: 1 } },
     populate: { path: "printingGroup", select: "name" },
   });
   if (!booking) throw "Booking not found.";

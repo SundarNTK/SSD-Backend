@@ -1355,7 +1355,9 @@ async function confirmOrder(req, res) {
       const [existing, existingTxn] = await Promise.all([
         Booking.findById(order.bookingId)
           .populate("customer", "customerCode name email mobileNumber")
-          .populate("lines.deities", "name")
+          // Print order, not display order — this feeds the receipt (see
+          // models/deities' printOrder field).
+          .populate({ path: "lines.deities", select: "name", options: { sort: { printOrder: 1, name: 1 } } })
           .populate("bookedBy", "name email"),
         Transaction.findOne(Transaction.notDeletedFilter({ orderId: order._id })),
       ]);
@@ -1421,7 +1423,9 @@ async function getOrderStatus(req, res) {
       const [booking, txn] = await Promise.all([
         Booking.findById(order.bookingId)
           .populate("customer", "customerCode name email mobileNumber")
-          .populate("lines.deities", "name")
+          // Print order, not display order — this feeds the receipt (see
+          // models/deities' printOrder field).
+          .populate({ path: "lines.deities", select: "name", options: { sort: { printOrder: 1, name: 1 } } })
           .populate("bookedBy", "name email"),
         Transaction.findOne(Transaction.notDeletedFilter({ orderId: order._id })),
       ]);
@@ -1578,7 +1582,9 @@ async function getBookingDetail(req, res) {
         .populate("customer", "customerCode name email mobileNumber")
         .populate("orderId", "orderNumber orderStatus")
         .populate("paymentMode", "name")
-        .populate("lines.deities", "name")
+        // Print order, not display order — this feeds the receipt (see
+        // models/deities' printOrder field).
+        .populate({ path: "lines.deities", select: "name", options: { sort: { printOrder: 1, name: 1 } } })
         .populate("bookedBy", "name email"),
       Transaction.find(Transaction.notDeletedFilter({ bookingId: id }))
         .select("receiptNo amount paymentStatus paymentModeName transactionDate processedBy")

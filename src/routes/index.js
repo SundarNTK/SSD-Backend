@@ -25,6 +25,7 @@ const nakshathiramRoutes = require("../controllers/nakshathirams");
 const paymentModeRoutes = require("../controllers/payment-modes");
 const translateRoutes = require("../controllers/translate");
 const posRoutes = require("../controllers/pos");
+const posDisplayRoutes = require("../controllers/pos-display");
 const inventoryRoutes = require("../controllers/inventory");
 const paymentsRoutes = require("../controllers/payments");
 const posOrderConfirmationRoutes = require("../controllers/pos-order-confirmation");
@@ -111,6 +112,10 @@ mastersRouter.use(translateRoutes);
 router.use("/masters", mastersRouter);
 
 router.use("/pos", posRoutes);
+// Customer tablet display — GET is public (pairing code); POST/PUT are staff-gated
+// inside the controller. Must stay outside `/pos` because that tree's
+// router.use(authGuard, adminOnly) would block the tablet.
+router.use("/pos-display", posDisplayRoutes);
 router.use("/inventory", inventoryRoutes);
 router.use("/payments", paymentsRoutes);
 router.use("/pos-order-confirmation", posOrderConfirmationRoutes);

@@ -12,6 +12,9 @@ const createSchema = Joi.object({
   // model's own comment). Not required — a deity left at the default 0
   // simply sorts among the other unordered ones.
   displayOrder: Joi.number().integer().min(0).default(0),
+  // Same shape, independent value — the order this deity prints in on a
+  // ticket, not the order it's offered for selection.
+  printOrder: Joi.number().integer().min(0).default(0),
 });
 
 const updateSchema = Joi.object({
@@ -21,6 +24,7 @@ const updateSchema = Joi.object({
   printingGroup: objectId,
   status: Joi.number().valid(0, 1),
   displayOrder: Joi.number().integer().min(0),
+  printOrder: Joi.number().integer().min(0),
 });
 
 module.exports = { createSchema, updateSchema };

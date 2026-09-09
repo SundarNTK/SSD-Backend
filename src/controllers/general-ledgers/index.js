@@ -12,9 +12,9 @@ const { canonicalGstType } = require("../../utilities/constants/gst-types");
 const { createSchema, updateSchema } = require("./request-objects");
 
 const POPULATE = [
-  { path: "groupLevel1", select: "name" },
-  { path: "groupLevel2", select: "name" },
-  { path: "groupLevel3", select: "name" },
+  { path: "groupLevel1", select: "name code" },
+  { path: "groupLevel2", select: "name code" },
+  { path: "groupLevel3", select: "name code" },
 ];
 
 /**
