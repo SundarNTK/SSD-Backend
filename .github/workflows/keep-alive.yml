@@ -1,0 +1,27 @@
+name: Keep Render backend warm
+
+# Render's free plan spins the service down after ~15 minutes with no
+# incoming requests — the next real request then pays a ~30-50s cold boot
+# (container start + Node startup + MongoDB reconnect) before it responds,
+# which is exactly the "30+ sec to sign in" delay reported for both the
+# admin and POS panels (they share this one backend, so both take the same
+# hit whenever it's been idle). A ping well under that 15-minute window
+# keeps it from ever going idle long enough to spin down, at zero cost —
+# the alternative is a paid Render plan, which removes the cold start
+# entirely instead of working around it.
+on:
+  schedule:
+    # Every 10 minutes — comfortably inside Render's ~15 minute idle window,
+    # with margin for GitHub Actions' own scheduling jitter under load.
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping health endpoint
+        run: |
+          curl -sf --max-time 45 "https://ssd-backend-wau1.onrender.com/api/v1/health" \
+            && echo "Backend responded OK." \
+            || echo "Ping failed or timed out (likely a cold start in progress) — not fatal, next scheduled ping will retry."
