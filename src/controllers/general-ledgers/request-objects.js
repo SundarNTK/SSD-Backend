@@ -1,6 +1,11 @@
 const Joi = require("joi");
+const { GST_TYPES } = require("../../utilities/constants/gst-types");
 
 const objectId = Joi.string().hex().length(24);
+// Older saved labels ("Standard GST") are normalized to the official name
+// in the controller (canonicalGstType) before this ever runs on read, but
+// still need to validate on the way in for legacy client payloads.
+const gstTypeField = Joi.string().valid(...GST_TYPES, "Standard GST");
 
 // groupLevel2 only makes sense once groupLevel1 is chosen, groupLevel3 only
 // once groupLevel2 is chosen — same chain GL Group's own Level 2/3 forms
@@ -8,7 +13,7 @@ const objectId = Joi.string().hex().length(24);
 const createSchema = Joi.object({
   name: Joi.string().trim().min(1).max(150).required(),
   code: Joi.string().trim().min(1).max(30).required(),
-  gstType: objectId.required(),
+  gstType: gstTypeField.required(),
   groupLevel1: objectId.required(),
   groupLevel2: objectId.allow(null).default(null),
   groupLevel3: objectId.allow(null).when("groupLevel2", { is: Joi.exist().not(null), then: Joi.optional(), otherwise: Joi.forbidden() }).default(null),
@@ -19,7 +24,7 @@ const createSchema = Joi.object({
 const updateSchema = Joi.object({
   name: Joi.string().trim().min(1).max(150),
   code: Joi.string().trim().min(1).max(30),
-  gstType: objectId,
+  gstType: gstTypeField,
   groupLevel1: objectId,
   groupLevel2: objectId.allow(null),
   groupLevel3: objectId.allow(null),

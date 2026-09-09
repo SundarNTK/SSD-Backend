@@ -5,9 +5,7 @@ const escapeRegex = require("../../common/utils/escape-regex");
 const { responseHandler, exceptionHandler } = require("../../utilities/handlers");
 
 const Gst = require("../../models/gst");
-const GeneralLedger = require("../../models/general-ledgers");
-const { canonicalGstType, gstTypeMatchValues, isOfficialType, isZeroRateGstType, validateGstPercentage } = require("../../utilities/constants/gst-types");
-const { findBlockingReference } = require("../../common/utils/reference-guard");
+const { canonicalGstType, gstTypeMatchValues, isZeroRateGstType, validateGstPercentage } = require("../../utilities/constants/gst-types");
 const { createSchema, updateSchema } = require("./request-objects");
 
 const router = express.Router();
@@ -40,14 +38,32 @@ async function list(req, res) {
   }
 }
 
-async function findOtherActive(type, excludeId) {
-  const filter = {
-    isDeleted: false,
-    status: 1,
-    type: { $in: gstTypeMatchValues(type) },
-  };
+function rangesOverlap(aStart, aEnd, bStart, bEnd) {
+  const aEndT = aEnd ? new Date(aEnd).getTime() : Infinity;
+  const bEndT = bEnd ? new Date(bEnd).getTime() : Infinity;
+  return new Date(aStart).getTime() <= bEndT && new Date(bStart).getTime() <= aEndT;
+}
+
+/**
+ * "Same GST Type date ranges should not overlap" — checked against active
+ * records only. Several date-ranged records of the same type are expected
+ * (rate history, a scheduled future change); calculation picks whichever
+ * one's range covers the transaction's document date (see
+ * common/utils/gst-rate.js), so overlap is the only thing that would make
+ * that pick ambiguous.
+ */
+async function findOverlapping(type, startDate, endDate, excludeId) {
+  const filter = { isDeleted: false, status: 1, type: { $in: gstTypeMatchValues(type) } };
   if (excludeId) filter._id = { $ne: excludeId };
-  return Gst.findOne(filter);
+  const candidates = await Gst.find(filter).select("code effectiveStartDate effectiveEndDate");
+  return candidates.find((c) => rangesOverlap(startDate, endDate, c.effectiveStartDate, c.effectiveEndDate)) ?? null;
+}
+
+function overlapMessage(type, existing) {
+  const range = `${new Date(existing.effectiveStartDate).toISOString().slice(0, 10)} – ${
+    existing.effectiveEndDate ? new Date(existing.effectiveEndDate).toISOString().slice(0, 10) : "ongoing"
+  }`;
+  return `This date range overlaps an active "${type}" record (${existing.code}, ${range}). Adjust the dates so they don't overlap.`;
 }
 
 function applyGstTypeRules(body, fallbackType) {
@@ -63,63 +79,22 @@ function applyGstTypeRules(body, fallbackType) {
   return null;
 }
 
-async function lastActiveMessage(type, excludeId) {
-  if (!isOfficialType(type)) return null;
-  const other = await findOtherActive(type, excludeId);
-  if (other) return null;
-  return `Can't inactivate this GST. At least one "${canonicalGstType(type)}" record must stay active.`;
-}
-
-async function deactivateGst(doc, userId) {
-  doc.status = 0;
-  doc.updatedBy = userId || null;
-  await doc.save();
-}
-
-async function retargetLedgers(fromGstId, toGstId, userId) {
-  if (!fromGstId || !toGstId || String(fromGstId) === String(toGstId)) return;
-  await GeneralLedger.updateMany(GeneralLedger.notDeletedFilter({ gstType: fromGstId }), {
-    $set: { gstType: toGstId, updatedBy: userId || null },
-  });
-}
-
 async function create(req, res) {
   try {
-    const { replaceActive, ...body } = req.body;
+    const body = { ...req.body };
     const typeError = applyGstTypeRules(body);
     if (typeError) {
       return exceptionHandler({ res, error: typeError, statusCode: 400 });
     }
-    const wantsActive = Number(body.status) === 1;
-    let replaced = null;
-    if (!wantsActive) {
-      const existing = await findOtherActive(body.type);
-      if (!existing) {
-        return exceptionHandler({
-          res,
-          error: `Can't create this GST as inactive. At least one "${body.type}" record must be active.`,
-          statusCode: 400,
-        });
-      }
-    }
-    if (wantsActive) {
-      const existing = await findOtherActive(body.type);
+
+    if (Number(body.status) === 1) {
+      const existing = await findOverlapping(body.type, body.effectiveStartDate, body.effectiveEndDate);
       if (existing) {
-        if (!replaceActive) {
-          return exceptionHandler({
-            res,
-            error: `An active "${body.type}" GST record already exists (${existing.code}). Deactivate it first, or create this record as inactive.`,
-            statusCode: 409,
-          });
-        }
-        await deactivateGst(existing, req.auth?.userId);
-        replaced = existing;
+        return exceptionHandler({ res, error: overlapMessage(body.type, existing), statusCode: 409 });
       }
     }
+
     const doc = await Gst.create({ ...body, createdBy: req.auth?.userId || null });
-    if (replaced) {
-      await retargetLedgers(replaced._id, doc._id, req.auth?.userId);
-    }
     return responseHandler({ res, response: doc, successMessage: "Created successfully.", statusCode: 201 });
   } catch (error) {
     if (error?.code === 11000) {
@@ -131,7 +106,7 @@ async function create(req, res) {
 
 async function update(req, res) {
   try {
-    const { replaceActive, ...body } = req.body;
+    const body = { ...req.body };
     const doc = await Gst.findOne(Gst.notDeletedFilter({ _id: req.params.id }));
     if (!doc) throw "Record not found.";
 
@@ -141,36 +116,19 @@ async function update(req, res) {
     }
 
     const nextType = body.type ?? doc.type;
+    const nextStart = body.effectiveStartDate ?? doc.effectiveStartDate;
+    const nextEnd = body.effectiveEndDate !== undefined ? body.effectiveEndDate : doc.effectiveEndDate;
     const nextStatus = body.status !== undefined ? Number(body.status) : doc.status;
-    let replaced = null;
-
-    if (doc.status === 1 && nextStatus === 0 && nextType === doc.type) {
-      const message = await lastActiveMessage(doc.type, doc._id);
-      if (message) {
-        return exceptionHandler({ res, error: message, statusCode: 400 });
-      }
-    }
 
     if (nextStatus === 1) {
-      const existing = await findOtherActive(nextType, doc._id);
+      const existing = await findOverlapping(nextType, nextStart, nextEnd, doc._id);
       if (existing) {
-        if (!replaceActive) {
-          return exceptionHandler({
-            res,
-            error: `An active "${nextType}" GST record already exists (${existing.code}). Deactivate that record first, then activate this one.`,
-            statusCode: 409,
-          });
-        }
-        await deactivateGst(existing, req.auth?.userId);
-        replaced = existing;
+        return exceptionHandler({ res, error: overlapMessage(nextType, existing), statusCode: 409 });
       }
     }
 
     Object.assign(doc, body, { updatedBy: req.auth?.userId || null });
     await doc.save();
-    if (replaced) {
-      await retargetLedgers(replaced._id, doc._id, req.auth?.userId);
-    }
     return responseHandler({ res, response: doc, successMessage: "Updated successfully." });
   } catch (error) {
     return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 404 : undefined });
@@ -188,13 +146,9 @@ async function remove(req, res) {
         statusCode: 400,
       });
     }
-    const blockingMessage = await findBlockingReference(
-      [{ model: GeneralLedger, field: "gstType", label: "General Ledger" }],
-      doc._id
-    );
-    if (blockingMessage) {
-      return exceptionHandler({ res, error: blockingMessage, statusCode: 409 });
-    }
+    // No blocking-reference check here — a General Ledger account picks a
+    // GST *type*, not this specific dated record (see models/general-ledgers),
+    // so deleting one date-scoped rate row never strands a GL reference.
     await doc.softDelete(req.auth?.userId);
     return responseHandler({ res, successMessage: "Deactivated successfully." });
   } catch (error) {

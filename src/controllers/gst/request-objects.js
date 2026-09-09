@@ -38,7 +38,6 @@ const createSchema = gstRules(
       effectiveStartDate: Joi.date().required(),
       effectiveEndDate: Joi.date().allow(null).default(null),
       status: Joi.number().valid(0, 1).default(1),
-      replaceActive: Joi.boolean().default(false),
     })
   )
 );
@@ -52,7 +51,6 @@ const updateSchema = gstRules(
       effectiveStartDate: Joi.date(),
       effectiveEndDate: Joi.date().allow(null),
       status: Joi.number().valid(0, 1),
-      replaceActive: Joi.boolean(),
     })
   )
 );
