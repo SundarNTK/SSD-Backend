@@ -57,19 +57,40 @@ async function createOrReuseSession(req, res) {
         ? requested
         : await uniqueCode();
 
-    const created = await PosDisplaySession.create({
-      code,
-      ownerUserId,
-      entityId: req.auth.entityId ?? null,
-      payload: { phase: "idle", lines: [], grandTotal: 0, payingNow: 0, balanceDue: 0 },
-    });
+    try {
+      const created = await PosDisplaySession.create({
+        code,
+        ownerUserId,
+        entityId: req.auth.entityId ?? null,
+        payload: { phase: "idle", lines: [], grandTotal: 0, payingNow: 0, balanceDue: 0 },
+      });
 
-    return responseHandler({
-      res,
-      response: { code: created.code },
-      successMessage: "Customer display session created.",
-      statusCode: 201,
-    });
+      return responseHandler({
+        res,
+        response: { code: created.code },
+        successMessage: "Customer display session created.",
+        statusCode: 201,
+      });
+    } catch (error) {
+      // Two requests for the same account can both pass the findOne check
+      // above before either write lands — React Strict Mode's deliberate
+      // double-effect in dev triggers this reliably, but a genuine double
+      // click or a retried request would too. Whichever request loses the
+      // race hits the unique index on ownerUserId; rather than surface
+      // that as an error from an endpoint whose whole job is "create OR
+      // reuse," fetch the session the winner just created and return it.
+      if (error?.code === 11000 && error?.keyPattern?.ownerUserId) {
+        const winner = await PosDisplaySession.findOne({ ownerUserId });
+        if (winner) {
+          return responseHandler({
+            res,
+            response: { code: winner.code },
+            successMessage: "Customer display session ready.",
+          });
+        }
+      }
+      throw error;
+    }
   } catch (error) {
     return exceptionHandler({ res, error });
   }

@@ -8,6 +8,13 @@ const lineSchema = Joi.object({
   lineTotal: Joi.number().min(0).required(),
 });
 
+// One payment already collected against this booking (mode + amount) — see
+// PosDisplayPaymentEntry on the frontend (lib/posDisplay.ts).
+const paymentHistoryEntrySchema = Joi.object({
+  mode: Joi.string().trim().max(40).required(),
+  amount: Joi.number().min(0).required(),
+});
+
 const payloadSchema = Joi.object({
   phase: Joi.string().valid("idle", "cart", "collecting", "paynow", "terminal", "done").required(),
   customerName: Joi.string().trim().max(150).allow("", null),
@@ -22,6 +29,10 @@ const payloadSchema = Joi.object({
   bookingNumber: Joi.string().trim().max(40).allow("", null),
   paymentStatus: Joi.string().valid("paid", "partial", "pending").allow("", null),
   statusMessage: Joi.string().trim().max(200).allow("", null),
+  // validateBody strips unknown keys by default (stripUnknown: true) —
+  // without this field listed here explicitly, every paymentHistory entry
+  // the frontend sends gets silently dropped before it's even saved.
+  paymentHistory: Joi.array().items(paymentHistoryEntrySchema).max(50),
 }).required();
 
 const createSessionSchema = Joi.object({
