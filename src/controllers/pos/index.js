@@ -53,7 +53,7 @@ const adminOnly = require("../../common/middleware/admin-only");
 const requirePermission = require("../../common/middleware/require-permission");
 const validateBody = require("../../common/middleware/validate");
 const { USER_TYPES } = require("../../utilities/constants/user-types");
-const { isZeroRateGstType } = require("../../utilities/constants/gst-types");
+const { resolveGstRate } = require("../../common/utils/gst-rate");
 const { responseHandler, exceptionHandler } = require("../../utilities/handlers");
 const { nextSequence } = require("../../common/utils/sequence");
 const escapeRegex = require("../../common/utils/escape-regex");
@@ -163,25 +163,6 @@ function derivePaymentStatus(amountPaid, grandTotal) {
   if (amountPaid >= grandTotal - 0.005) return "paid";
   if (amountPaid > 0) return "partial";
   return "pending";
-}
-
-/**
- * Fetch the GST percentage for a General Ledger (populated on Item/Service).
- * Standard Rated uses the configured rate. Exempt, Zero-Rated, and Out of
- * Scope always resolve to 0 — GST is not calculated for those types.
- */
-async function resolveGstRate(generalLedgerId) {
-  if (!generalLedgerId) return 0;
-  try {
-    const GeneralLedger = mongoose.model("GeneralLedger");
-    const gl = await GeneralLedger.findById(generalLedgerId).populate("gstType");
-    const gst = gl?.gstType;
-    if (!gst) return 0;
-    if (isZeroRateGstType(gst.type)) return 0;
-    return gst.percentage ?? 0;
-  } catch {
-    return 0;
-  }
 }
 
 // ─── customer lookup ──────────────────────────────────────────────────────────
@@ -834,7 +815,7 @@ async function bookingSummary(req, res) {
         name = item.name;
         code = item.code;
         unitPrice = item.salePrice;
-        gstRate = await resolveGstRate(item.generalLedger?._id);
+        gstRate = await resolveGstRate(item.generalLedger?.gstType);
       } else {
         const svc = await Service.findOne(
           Service.notDeletedFilter({ _id: refId, status: 1, isPosAvailable: true })
@@ -846,7 +827,7 @@ async function bookingSummary(req, res) {
         name = svc.name;
         code = svc.code;
         unitPrice = svc.salePrice ?? 0;
-        gstRate = await resolveGstRate(svc.generalLedger?._id);
+        gstRate = await resolveGstRate(svc.generalLedger?.gstType);
       }
 
       // Check availability (read-only — no reservation written here)
@@ -1080,7 +1061,7 @@ async function createOrder(req, res) {
         name = item.name;
         code = item.code;
         unitPrice = item.salePrice;
-        gstRate = await resolveGstRate(item.generalLedger?._id);
+        gstRate = await resolveGstRate(item.generalLedger?.gstType);
       } else {
         const svc = await Service.findOne(
           Service.notDeletedFilter({ _id: refId, status: 1, isPosAvailable: true })
@@ -1091,7 +1072,7 @@ async function createOrder(req, res) {
         name = svc.name;
         code = svc.code;
         unitPrice = svc.salePrice ?? 0;
-        gstRate = await resolveGstRate(svc.generalLedger?._id);
+        gstRate = await resolveGstRate(svc.generalLedger?.gstType);
       }
 
       // Deity-mapped lines price (and later reserve/consume stock) per

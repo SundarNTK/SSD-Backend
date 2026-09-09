@@ -1,12 +1,12 @@
 /** Official GST Master types. */
-const GST_TYPES = ["Standard Rated", "Zero-Rated", "Exempt", "Out of Scope"];
+const GST_TYPES = ["Standard Rated", "Zero-Rated", "Exempt", "Out of Scope", "NA"];
 
 /** Older saved labels mapped onto the official names. */
 const GST_TYPE_ALIASES = {
   "Standard GST": "Standard Rated",
 };
 
-const ZERO_RATE_TYPES = ["Zero-Rated", "Exempt", "Out of Scope"];
+const ZERO_RATE_TYPES = ["Zero-Rated", "Exempt", "Out of Scope", "NA"];
 
 function canonicalGstType(type) {
   if (!type) return type;

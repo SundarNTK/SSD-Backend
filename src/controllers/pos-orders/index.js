@@ -31,7 +31,7 @@
 const mongoose = require("mongoose");
 const requirePermission = require("../../common/middleware/require-permission");
 const validateBody = require("../../common/middleware/validate");
-const { isZeroRateGstType } = require("../../utilities/constants/gst-types");
+const { resolveGstRate } = require("../../common/utils/gst-rate");
 const { responseHandler, exceptionHandler } = require("../../utilities/handlers");
 const { nextSequence } = require("../../common/utils/sequence");
 const { withUniqueReferenceId, ORIGIN_PREFIXES } = require("../../common/utils/payment-reference");
@@ -128,20 +128,6 @@ async function resolveOutstandingBalance(order) {
   return { booking, balance: +(booking.grandTotal - paid).toFixed(2) };
 }
 
-async function resolveGstRate(generalLedgerId) {
-  if (!generalLedgerId) return 0;
-  try {
-    const GeneralLedger = mongoose.model("GeneralLedger");
-    const gl = await GeneralLedger.findById(generalLedgerId).populate("gstType");
-    const gst = gl?.gstType;
-    if (!gst) return 0;
-    if (isZeroRateGstType(gst.type)) return 0;
-    return gst.percentage ?? 0;
-  } catch {
-    return 0;
-  }
-}
-
 // ─── create order ─────────────────────────────────────────────────────────
 
 /**
@@ -192,7 +178,7 @@ async function createOrder(req, res) {
         name = item.name;
         code = item.code;
         unitPrice = item.salePrice;
-        gstRate = await resolveGstRate(item.generalLedger?._id);
+        gstRate = await resolveGstRate(item.generalLedger?.gstType);
       } else {
         const svc = await Service.findOne(
           Service.notDeletedFilter({ _id: refId, status: 1, isPosAvailable: true })
@@ -203,7 +189,7 @@ async function createOrder(req, res) {
         name = svc.name;
         code = svc.code;
         unitPrice = svc.salePrice ?? 0;
-        gstRate = await resolveGstRate(svc.generalLedger?._id);
+        gstRate = await resolveGstRate(svc.generalLedger?.gstType);
       }
 
       const qty = effectiveQuantity(line);
