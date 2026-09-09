@@ -10,7 +10,14 @@ const { createSchema, updateSchema } = require("./request-objects");
 const POPULATE = [
   { path: "generalLedger", select: "name code" },
   { path: "printingGroup", select: "name" },
-  { path: "deityMapping", select: "name printingGroup", populate: { path: "printingGroup", select: "name" } },
+  {
+    path: "deityMapping",
+    select: "name printingGroup",
+    // Admin-assigned display order (ties alphabetical) — see
+    // models/deities' displayOrder field.
+    options: { sort: { displayOrder: 1, name: 1 } },
+    populate: { path: "printingGroup", select: "name" },
+  },
   { path: "categoryDetails.category", select: "name color" },
   { path: "categoryDetails.subCategory", select: "name color" },
 ];

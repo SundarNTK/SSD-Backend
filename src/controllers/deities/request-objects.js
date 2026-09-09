@@ -8,6 +8,10 @@ const createSchema = Joi.object({
   tamilName: Joi.string().allow("").default(""),
   printingGroup: objectId.required(),
   status: Joi.number().valid(0, 1).default(1),
+  // Lower sorts first; ties fall back to alphabetical by name (see the
+  // model's own comment). Not required — a deity left at the default 0
+  // simply sorts among the other unordered ones.
+  displayOrder: Joi.number().integer().min(0).default(0),
 });
 
 const updateSchema = Joi.object({
@@ -16,6 +20,7 @@ const updateSchema = Joi.object({
   tamilName: Joi.string().allow(""),
   printingGroup: objectId,
   status: Joi.number().valid(0, 1),
+  displayOrder: Joi.number().integer().min(0),
 });
 
 module.exports = { createSchema, updateSchema };

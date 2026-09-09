@@ -28,6 +28,47 @@ function mockModel(doc) {
   };
 }
 
+function mockListQuery(items) {
+  const query = {
+    sort: jest.fn(() => query),
+    skip: jest.fn(() => query),
+    limit: jest.fn(() => query),
+    populate: jest.fn(() => query),
+    exec: jest.fn(async () => items),
+  };
+  return query;
+}
+
+function mockListModel(items) {
+  return {
+    notDeletedFilter: jest.fn((filter = {}) => ({ isDeleted: false, ...filter })),
+    find: jest.fn(() => mockListQuery(items)),
+    countDocuments: jest.fn(async () => items.length),
+  };
+}
+
+describe("makeCrudController list()", () => {
+  it("sorts by createdAt: -1 when no sort option is given (every existing master's original behaviour)", async () => {
+    const Model = mockListModel([]);
+    const { list } = makeCrudController(Model);
+
+    await list({ query: {} }, mockRes());
+
+    const query = Model.find.mock.results[0].value;
+    expect(query.sort).toHaveBeenCalledWith({ createdAt: -1 });
+  });
+
+  it("uses a custom sort option when given (e.g. Deity Master's displayOrder then name)", async () => {
+    const Model = mockListModel([]);
+    const { list } = makeCrudController(Model, { sort: { displayOrder: 1, name: 1 } });
+
+    await list({ query: {} }, mockRes());
+
+    const query = Model.find.mock.results[0].value;
+    expect(query.sort).toHaveBeenCalledWith({ displayOrder: 1, name: 1 });
+  });
+});
+
 describe("makeCrudController remove()", () => {
   it("soft-deletes normally when referencedBy is omitted", async () => {
     const softDelete = jest.fn(async () => {});
