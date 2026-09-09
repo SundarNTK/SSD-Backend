@@ -14,8 +14,14 @@ const { findBlockingReference } = require("../utils/reference-guard");
  * `field` points at this one, and refuses the delete if it finds one. Empty
  * by default; a caller only needs to pass it for masters something else
  * actually references (see reference-guard.js for the matching rules).
+ *
+ * `sort` — a Mongoose sort spec for list(), defaulting to `{createdAt: -1}`
+ * (every existing master's original, implicit behaviour). Pass a different
+ * spec for a master with its own meaningful order — e.g. Deity Master's
+ * `{ displayOrder: 1, name: 1 }`, so admin-assigned ordering wins and
+ * deities sharing the same value still land in a stable, alphabetical spot.
  */
-function makeCrudController(Model, { searchFields = [], populate = [], referencedBy = [] } = {}) {
+function makeCrudController(Model, { searchFields = [], populate = [], referencedBy = [], sort = { createdAt: -1 } } = {}) {
   async function list(req, res) {
     try {
       const page = Math.max(1, Number(req.query.page) || 1);
@@ -30,7 +36,7 @@ function makeCrudController(Model, { searchFields = [], populate = [], reference
       }
 
       let query = Model.find(filter)
-        .sort({ createdAt: -1 })
+        .sort(sort)
         .skip((page - 1) * pageSize)
         .limit(pageSize);
       populate.forEach((p) => { query = query.populate(p); });

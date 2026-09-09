@@ -11,7 +11,9 @@ const { createSchema, updateSchema } = require("./request-objects");
 const POPULATE = [
   { path: "category", select: "name color" },
   { path: "subCategory", select: "name color" },
-  { path: "deityMapping", select: "name" },
+  // Admin-assigned display order (ties alphabetical) — see models/deities'
+  // displayOrder field.
+  { path: "deityMapping", select: "name", options: { sort: { displayOrder: 1, name: 1 } } },
 ];
 
 /**
