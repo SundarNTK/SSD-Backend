@@ -1,5 +1,11 @@
 name: Keep Render backend warm
 
+# ⚠️ RENDER + VERCEL DEPLOYMENT ONLY — delete this file once SSD-Backend
+# moves to AWS (or any host that keeps the process running continuously,
+# e.g. ECS/EC2/Elastic Beanstalk). It exists purely to work around one
+# specific Render free-plan behavior and has no purpose anywhere else —
+# nothing else in this codebase depends on it.
+#
 # Render's free plan spins the service down after ~15 minutes with no
 # incoming requests — the next real request then pays a ~30-50s cold boot
 # (container start + Node startup + MongoDB reconnect) before it responds,
@@ -8,7 +14,11 @@ name: Keep Render backend warm
 # hit whenever it's been idle). A ping well under that 15-minute window
 # keeps it from ever going idle long enough to spin down, at zero cost —
 # the alternative is a paid Render plan, which removes the cold start
-# entirely instead of working around it.
+# entirely instead of working around it. An always-on host doesn't have this
+# spin-down behavior to begin with, so this whole workflow becomes a no-op
+# cost — remove it (and, if nothing else references
+# ssd-backend-wau1.onrender.com by then, its GitHub Actions minutes) as part
+# of the AWS cutover, not before.
 on:
   schedule:
     # Every 10 minutes — comfortably inside Render's ~15 minute idle window,
