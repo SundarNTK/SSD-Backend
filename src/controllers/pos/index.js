@@ -54,6 +54,7 @@ const requirePermission = require("../../common/middleware/require-permission");
 const validateBody = require("../../common/middleware/validate");
 const { USER_TYPES } = require("../../utilities/constants/user-types");
 const { resolveGstRate } = require("../../common/utils/gst-rate");
+const { sortLineDeities } = require("../../common/utils/sort-line-deities");
 const { responseHandler, exceptionHandler } = require("../../utilities/handlers");
 const { nextSequence } = require("../../common/utils/sequence");
 const escapeRegex = require("../../common/utils/escape-regex");
@@ -1356,12 +1357,15 @@ async function confirmOrder(req, res) {
         Booking.findById(order.bookingId)
           .populate("customer", "customerCode name email mobileNumber")
           // Print order, not display order — this feeds the receipt (see
-          // models/deities' printOrder field).
-          .populate({ path: "lines.deities", select: "name", options: { sort: { printOrder: 1, name: 1 } } })
+          // models/deities' printOrder field). Sorted in JS below —
+          // Mongoose can't apply a populate `sort` to a path nested
+          // inside a document array like this one.
+          .populate({ path: "lines.deities", select: "name printOrder" })
           .populate("bookedBy", "name email"),
         Transaction.findOne(Transaction.notDeletedFilter({ orderId: order._id })),
       ]);
       if (!existing) throw "Booking record not found for this confirmed order.";
+      sortLineDeities(existing, "printOrder");
       return responseHandler({
         res,
         response: {
@@ -1423,13 +1427,13 @@ async function getOrderStatus(req, res) {
       const [booking, txn] = await Promise.all([
         Booking.findById(order.bookingId)
           .populate("customer", "customerCode name email mobileNumber")
-          // Print order, not display order — this feeds the receipt (see
-          // models/deities' printOrder field).
-          .populate({ path: "lines.deities", select: "name", options: { sort: { printOrder: 1, name: 1 } } })
+          // Print order, not display order — see confirmOrder's comment above.
+          .populate({ path: "lines.deities", select: "name printOrder" })
           .populate("bookedBy", "name email"),
         Transaction.findOne(Transaction.notDeletedFilter({ orderId: order._id })),
       ]);
       if (!booking) throw "Booking record not found for this confirmed order.";
+      sortLineDeities(booking, "printOrder");
       return responseHandler({
         res,
         // Flat, same shape as createOrder/confirmOrder's own "confirmed"
@@ -1582,9 +1586,8 @@ async function getBookingDetail(req, res) {
         .populate("customer", "customerCode name email mobileNumber")
         .populate("orderId", "orderNumber orderStatus")
         .populate("paymentMode", "name")
-        // Print order, not display order — this feeds the receipt (see
-        // models/deities' printOrder field).
-        .populate({ path: "lines.deities", select: "name", options: { sort: { printOrder: 1, name: 1 } } })
+        // Print order, not display order — see confirmOrder's comment above.
+        .populate({ path: "lines.deities", select: "name printOrder" })
         .populate("bookedBy", "name email"),
       Transaction.find(Transaction.notDeletedFilter({ bookingId: id }))
         .select("receiptNo amount paymentStatus paymentModeName transactionDate processedBy")
@@ -1593,6 +1596,7 @@ async function getBookingDetail(req, res) {
     ]);
 
     if (!booking) throw "Booking not found.";
+    sortLineDeities(booking, "printOrder");
 
     const amountPaid = sumPaidAmount(transactions);
 
