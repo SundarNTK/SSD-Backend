@@ -17,6 +17,13 @@ const netsCallbackSchema = Joi.object({
   amount: Joi.number().min(0).optional(),
   terminalId: Joi.string().trim().max(50).allow("", null).optional(),
   approvalCode: Joi.string().trim().max(50).allow("", null).optional(),
+  // The terminal SDK's full translated response (card type, masked PAN,
+  // retrieval reference number, response text, STAN, ...) — shape varies by
+  // terminal/SDK version, so this is intentionally unvalidated beyond "an
+  // object, not too large" and stored verbatim as PosTransaction's
+  // terminalConfirmationDetails for audit. Optional so older EXE builds
+  // that don't send it yet keep working unchanged.
+  terminalResponse: Joi.object().unknown(true).max(50).optional(),
 });
 
 module.exports = { netsCallbackSchema };

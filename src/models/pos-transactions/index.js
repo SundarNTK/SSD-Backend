@@ -38,6 +38,21 @@ const POS_TRANSACTION_STATUSES = ["pending", "paid", "failed", "cancelled", "exp
 const posTransactionSchema = new mongoose.Schema({
   receiptNo: { type: String, required: true },
 
+  // The per-ATTEMPT gateway-facing correlation id — same 13-char format as
+  // PosOrder.referenceId (common/utils/payment-reference.js), but minted
+  // FRESH for every PayNow/NETS/Credit Card payment attempt against an
+  // order (the first payment AND every later top-up), never reused across
+  // them. This — not PosOrder.referenceId — is what actually gets embedded
+  // in the PayNow QR / sent to the NETS terminal, and what
+  // confirmPosPayment looks the pending row up by directly. Reusing one
+  // order-level reference across multiple sequential PayNow/NETS attempts
+  // was the original design and turned out to be a real problem: a bank/
+  // terminal can refuse, or mis-reconcile, a second live payment carrying a
+  // reference it already saw settle once — see confirmPosPayment's own
+  // comment. Null only for Cash (settled synchronously, never dispatched
+  // through the shared confirmation path at all).
+  referenceId: { type: String, default: null },
+
   bookingId: { type: mongoose.Schema.Types.ObjectId, ref: "PosBooking", default: null },
   orderId: { type: mongoose.Schema.Types.ObjectId, ref: "PosOrder", required: true },
   customer: { type: mongoose.Schema.Types.ObjectId, ref: "Customer", required: true },
@@ -51,8 +66,10 @@ const posTransactionSchema = new mongoose.Schema({
 
   // Whatever the gateway/terminal hands back once settled — DBS's
   // txnRefId for PayNow, the terminal's own reference for NETS. Not set
-  // for Cash (nothing to correlate against). The one field a duplicate
-  // callback is matched against before deciding "already processed."
+  // for Cash (nothing to correlate against). Stored for audit/display —
+  // NOT what a duplicate callback is matched against any more (that's
+  // `referenceId` above, unique per attempt); kept because it's still the
+  // bank/terminal's own transaction id, useful on its own merits.
   gatewayReference: { type: mongoose.Schema.Types.Mixed, default: null },
 
   // Only meaningful while paymentStatus is "pending" — a QR/terminal
@@ -75,6 +92,18 @@ const posTransactionSchema = new mongoose.Schema({
   // party). Never set by a real gateway/terminal webhook — those only ever
   // set gatewayReference.
   manualConfirmationDetails: { type: mongoose.Schema.Types.Mixed, default: null },
+
+  // Set only by a genuine automatic gateway/terminal confirmation — the
+  // NETS/Credit Card machine's own response (approval code, terminal id,
+  // and whatever else the terminal SDK translates back — card type, masked
+  // PAN, retrieval reference number, response text) captured verbatim for
+  // audit, the same spirit as manualConfirmationDetails but for the
+  // opposite case. See controllers/payments/nets/callback and
+  // confirmPosPayment. Never set by a manual admin/cashier confirmation —
+  // that only ever sets manualConfirmationDetails. Cash and PayNow leave
+  // this null (PayNow's own DBS ICN payload isn't a physical terminal
+  // response — nothing to capture here for it today).
+  terminalConfirmationDetails: { type: mongoose.Schema.Types.Mixed, default: null },
 
   // Denormalized snapshots — see common/utils/entity-snapshot.
   customerInfo: { type: mongoose.Schema.Types.Mixed, default: null },
@@ -101,6 +130,11 @@ posTransactionSchema.index({ paymentStatus: 1, createdAt: -1 });
 // Sparse — most rows (Cash) never set this, only PayNow/NETS rows do; a
 // dense index here would carry every Cash row for no benefit.
 posTransactionSchema.index({ gatewayReference: 1 }, { sparse: true });
+// Unique + sparse — every PayNow/NETS/Credit Card row gets one (Cash never
+// does), and confirmPosPayment looks a specific attempt up by this field
+// directly, so it must never collide across rows the way gatewayReference
+// (audit-only now) is allowed to.
+posTransactionSchema.index({ referenceId: 1 }, { unique: true, sparse: true });
 
 module.exports = {
   PosTransaction: mongoose.model("PosTransaction", posTransactionSchema, "pos_transactions"),

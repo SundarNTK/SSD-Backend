@@ -46,8 +46,9 @@ describe("listPending", () => {
       mockQuery([
         {
           _id: TXN_ID,
+          referenceId: REFERENCE_ID,
           bookingId: null,
-          orderId: { referenceId: REFERENCE_ID, orderNumber: "POS1" },
+          orderId: { orderNumber: "POS1" },
           customer: { _id: "c1", name: "Devotee A", customerCode: "SSD-C0001" },
           paymentModeName: "PayNow",
           amount: 100,
@@ -56,8 +57,9 @@ describe("listPending", () => {
         },
         {
           _id: "888888888888888888888888",
+          referenceId: null, // Cash never gets one
           bookingId: null,
-          orderId: { referenceId: "POSCASHORDER01", orderNumber: "POS2" },
+          orderId: { orderNumber: "POS2" },
           customer: { _id: "c2", name: "Devotee B" },
           paymentModeName: "Cash",
           amount: 50,
@@ -86,8 +88,9 @@ describe("listPending", () => {
       mockQuery([
         {
           _id: TXN_ID,
+          referenceId: REFERENCE_ID,
           bookingId: BOOKING_ID,
-          orderId: { referenceId: REFERENCE_ID, orderNumber: "POS1" },
+          orderId: { orderNumber: "POS1" },
           customer: { _id: "c1", name: "Devotee A" },
           paymentModeName: "PayNow",
           amount: 75,
@@ -125,15 +128,12 @@ describe("getPendingDetail", () => {
   });
 
   it("returns 'new_payment' detail (order's own lines/total) when the pending transaction has no bookingId yet", async () => {
-    const orderDoc = {
-      referenceId: REFERENCE_ID,
-      orderNumber: "POS1",
-      customer: { name: "Devotee A" },
-      lines: [{ name: "Special Darshan" }],
-      grandTotal: 175,
-    };
-    PosOrder.findOne = jest.fn(() => mockQuery(orderDoc));
-    PosTransaction.findOne = jest.fn(() => mockQuery({ bookingId: null, amount: 100, paymentModeName: "PayNow", expiresAt: new Date() }));
+    PosTransaction.findOne = jest.fn(() =>
+      mockQuery({ referenceId: REFERENCE_ID, orderId: ORDER_ID, bookingId: null, amount: 100, paymentModeName: "PayNow", expiresAt: new Date() })
+    );
+    PosOrder.findOne = jest.fn(() =>
+      mockQuery({ orderNumber: "POS1", customer: { name: "Devotee A" }, lines: [{ name: "Special Darshan" }], grandTotal: 175 })
+    );
 
     const req = { params: { referenceId: REFERENCE_ID } };
     const res = mockRes();
@@ -147,9 +147,10 @@ describe("getPendingDetail", () => {
   });
 
   it("returns 'balance_due' detail (booking's own lines/total) when the pending transaction already has a bookingId", async () => {
-    const orderDoc = { referenceId: REFERENCE_ID, orderNumber: "POS1", customer: {}, lines: [], grandTotal: 175 };
-    PosOrder.findOne = jest.fn(() => mockQuery(orderDoc));
-    PosTransaction.findOne = jest.fn(() => mockQuery({ bookingId: BOOKING_ID, amount: 75, paymentModeName: "PayNow", expiresAt: new Date() }));
+    PosTransaction.findOne = jest.fn(() =>
+      mockQuery({ referenceId: REFERENCE_ID, orderId: ORDER_ID, bookingId: BOOKING_ID, amount: 75, paymentModeName: "PayNow", expiresAt: new Date() })
+    );
+    PosOrder.findOne = jest.fn(() => mockQuery({ orderNumber: "POS1", customer: {}, lines: [], grandTotal: 175 }));
     PosBooking.findById = jest.fn(() => mockQuery({ bookingNumber: "BKG1", lines: [{ name: "Archanai" }], grandTotal: 175 }));
 
     const req = { params: { referenceId: REFERENCE_ID } };
@@ -163,17 +164,20 @@ describe("getPendingDetail", () => {
     );
   });
 
-  it("rejects when no order matches the reference", async () => {
-    PosOrder.findOne = jest.fn(() => mockQuery(null));
+  it("rejects when no pending transaction matches the reference (already confirmed, cancelled, or expired)", async () => {
+    PosTransaction.findOne = jest.fn(() => mockQuery(null));
     const req = { params: { referenceId: REFERENCE_ID } };
     const res = mockRes();
     await getPendingDetail(req, res);
     expect(res.status).toHaveBeenCalledWith(404);
+    expect(PosOrder.findOne).not.toHaveBeenCalled();
   });
 
-  it("rejects when there is no active pending transaction for this order (already confirmed, or expired)", async () => {
-    PosOrder.findOne = jest.fn(() => mockQuery({ referenceId: REFERENCE_ID, orderNumber: "POS1" }));
-    PosTransaction.findOne = jest.fn(() => mockQuery(null));
+  it("rejects when the pending transaction's order can no longer be found", async () => {
+    PosTransaction.findOne = jest.fn(() =>
+      mockQuery({ referenceId: REFERENCE_ID, orderId: ORDER_ID, bookingId: null, amount: 100, paymentModeName: "PayNow", expiresAt: new Date() })
+    );
+    PosOrder.findOne = jest.fn(() => mockQuery(null));
 
     const req = { params: { referenceId: REFERENCE_ID } };
     const res = mockRes();

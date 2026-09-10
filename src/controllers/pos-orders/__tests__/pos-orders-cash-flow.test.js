@@ -39,6 +39,8 @@ const {
   createPendingPayment,
   writePosBookingOnly,
   initiateNetsPayment,
+  manualConfirmTerminalPayment,
+  listBookings,
 } = require("../index");
 
 const RECEIPT_NO = "RCP-20260826-0001";
@@ -57,6 +59,8 @@ function mockQuery(result) {
     select: jest.fn(() => mockQuery(result)),
     populate: jest.fn(() => mockQuery(result)),
     sort: jest.fn(() => mockQuery(result)),
+    skip: jest.fn(() => mockQuery(result)),
+    limit: jest.fn(() => mockQuery(result)),
     then: (resolve, reject) => Promise.resolve(result).then(resolve, reject),
     catch: (reject) => Promise.resolve(result).catch(reject),
   };
@@ -210,11 +214,17 @@ describe("createOrder (Cash flow, pos_orders)", () => {
         expect.objectContaining({
           data: expect.objectContaining({
             status: "pending",
-            paymentDetails: { amount: 175, qr: "data:image/png;base64,FAKE", engine: "dummy" },
+            // paymentDetails.referenceId is the pending transaction's OWN
+            // fresh reference — never the same as the order's own
+            // top-level `referenceId` in this same response (see
+            // buildPaynowQrForOrder's own comment on why they must differ).
+            paymentDetails: { referenceId: expect.stringMatching(/^POS/), amount: 175, qr: "data:image/png;base64,FAKE", engine: "dummy" },
             paymentDetailsError: null,
           }),
         })
       );
+      const [jsonArg] = res.json.mock.calls[0];
+      expect(jsonArg.data.paymentDetails.referenceId).not.toBe(jsonArg.data.referenceId);
     });
 
     it("worst case — a QR build failure (config incomplete, render error, ...) does not fail order creation: the order still comes back with a referenceId, paymentDetails: null, and paymentDetailsError set", async () => {
@@ -622,7 +632,12 @@ describe("initiateNetsPayment (the 'Phase 3' NETS initiate step — fixes the am
     expect(PosTransaction.create).toHaveBeenCalledWith(
       expect.objectContaining({ paymentMode: PAYMENT_MODE_ID, paymentModeName: "NETS", amount: 175, paymentStatus: "pending" })
     );
-    expect(result).toEqual({ referenceId: REFERENCE_ID, amount: 175, currency: "SGD" });
+    // The returned referenceId is the pending transaction's OWN fresh
+    // reference (see createPendingPayment's own comment) — never the order
+    // referenceId this was called with, or a top-up sent to the terminal
+    // would carry a reference it's already seen settle once.
+    expect(result).toEqual({ referenceId: expect.stringMatching(/^POS/), amount: 175, currency: "SGD" });
+    expect(result.referenceId).not.toBe(REFERENCE_ID);
   });
 
   it("fixes the transaction at a genuinely partial requested amount, matching what's returned", async () => {
@@ -684,14 +699,10 @@ describe("confirmPosPayment (shared confirmation dispatcher entrypoint — confi
 
     PosOrder.findOne = jest.fn(() => mockQuery(pendingOrder()));
     PosOrder.findByIdAndUpdate = jest.fn(async () => {});
-    // confirmPosPayment calls findOne twice with different filters — the
-    // duplicate-gatewayReference check (paymentStatus: "paid") and the
-    // find-the-pending-row lookup (paymentStatus: "pending"). This mock has
-    // to tell them apart, or the first call's default answer would satisfy
-    // both regardless of which query it actually was.
-    PosTransaction.findOne = jest.fn((filter) =>
-      mockQuery(filter.paymentStatus === "paid" ? null : pendingTxn())
-    );
+    // confirmPosPayment now resolves the pending row with ONE lookup, by
+    // its own unique referenceId (see the model's own comment) — no more
+    // separate order lookup + gatewayReference dedup scan.
+    PosTransaction.findOne = jest.fn(() => mockQuery(pendingTxn()));
     PosTransaction.findOneAndUpdate = jest.fn(async (filter, update) => ({ ...pendingTxn(), ...update.$set }));
     PosTransaction.findByIdAndUpdate = jest.fn(async () => {});
     PosBooking.create = jest.fn(async (doc) => ({ _id: BOOKING_ID, ...doc }));
@@ -718,6 +729,105 @@ describe("confirmPosPayment (shared confirmation dispatcher entrypoint — confi
     expect(result.amountPaid).toBe(175);
   });
 
+  it("stores manualConfirmationDetails on the transaction when the caller is a manual (not gateway/terminal) confirmation — this is the flag that distinguishes the two", async () => {
+    const details = { transactionRefNo: "123456789012", confirmedBy: USER_ID, confirmedAt: expect.any(Date) };
+    await confirmPosPayment(REFERENCE_ID, {
+      gatewayReference: "123456789012",
+      processedBy: USER_ID,
+      manualConfirmationDetails: details,
+    });
+
+    expect(PosTransaction.findOneAndUpdate).toHaveBeenCalledWith(
+      { _id: "999999999999999999999999", paymentStatus: "pending" },
+      {
+        $set: {
+          paymentStatus: "paid",
+          gatewayReference: "123456789012",
+          processedBy: USER_ID,
+          manualConfirmationDetails: details,
+        },
+      },
+      { new: true }
+    );
+  });
+
+  it("leaves manualConfirmationDetails off the $set entirely for a real gateway/terminal confirmation — stays null on the schema's own default, not overwritten with an explicit null", async () => {
+    await confirmPosPayment(REFERENCE_ID, { gatewayReference: "TERMINAL-APPROVAL-CODE", processedBy: USER_ID });
+
+    const [, update] = PosTransaction.findOneAndUpdate.mock.calls[0];
+    expect(update.$set).not.toHaveProperty("manualConfirmationDetails");
+  });
+
+  it("stores terminalConfirmationDetails on the transaction when the caller is a genuine NETS/Credit Card terminal callback (controllers/payments/nets/callback)", async () => {
+    const terminalDetails = { terminalId: "TERM-01", approvalCode: "APPROVAL123", response: { cardType: "VISA" }, confirmedAt: expect.any(Date) };
+    await confirmPosPayment(REFERENCE_ID, {
+      gatewayReference: "APPROVAL123",
+      terminalConfirmationDetails: terminalDetails,
+    });
+
+    expect(PosTransaction.findOneAndUpdate).toHaveBeenCalledWith(
+      { _id: "999999999999999999999999", paymentStatus: "pending" },
+      {
+        $set: {
+          paymentStatus: "paid",
+          gatewayReference: "APPROVAL123",
+          processedBy: null,
+          terminalConfirmationDetails: terminalDetails,
+        },
+      },
+      { new: true }
+    );
+  });
+
+  it("leaves terminalConfirmationDetails off the $set entirely for a manual admin/cashier confirmation — the two audit trails are mutually exclusive", async () => {
+    await confirmPosPayment(REFERENCE_ID, {
+      gatewayReference: "123456789012",
+      manualConfirmationDetails: { transactionRefNo: "123456789012" },
+    });
+
+    const [, update] = PosTransaction.findOneAndUpdate.mock.calls[0];
+    expect(update.$set).not.toHaveProperty("terminalConfirmationDetails");
+    expect(update.$set).toHaveProperty("manualConfirmationDetails");
+  });
+
+  it("manualConfirmTerminalPayment (POST /pos/booking/manual-confirm) validates the body, routes through the shared dispatcher, and tags the transaction as manually confirmed", async () => {
+    const req = {
+      body: { referenceId: REFERENCE_ID, transactionRefNo: "  123456789012  " },
+      auth: { userId: USER_ID },
+    };
+    const res = mockRes();
+
+    await manualConfirmTerminalPayment(req, res);
+
+    expect(PosTransaction.findOneAndUpdate).toHaveBeenCalledWith(
+      { _id: "999999999999999999999999", paymentStatus: "pending" },
+      {
+        $set: {
+          paymentStatus: "paid",
+          gatewayReference: "123456789012",
+          processedBy: USER_ID,
+          manualConfirmationDetails: {
+            transactionRefNo: "123456789012",
+            confirmedBy: USER_ID,
+            confirmedAt: expect.any(Date),
+          },
+        },
+      },
+      { new: true }
+    );
+    expect(res.status).not.toHaveBeenCalledWith(400);
+  });
+
+  it("manualConfirmTerminalPayment rejects a missing transactionRefNo with a 400 before ever touching the dispatcher", async () => {
+    const req = { body: { referenceId: REFERENCE_ID }, auth: { userId: USER_ID } };
+    const res = mockRes();
+
+    await manualConfirmTerminalPayment(req, res);
+
+    expect(PosTransaction.findOneAndUpdate).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(400);
+  });
+
   it("rejects a confirmation amount that doesn't match the pending transaction's own fixed amount — the amount cannot be changed at confirm time", async () => {
     await expect(confirmPosPayment(REFERENCE_ID, { amount: 999, gatewayReference: "DBS-TXN-REF-001" })).rejects.toMatch(
       /does not match the expected amount/
@@ -730,10 +840,11 @@ describe("confirmPosPayment (shared confirmation dispatcher entrypoint — confi
     expect(result.alreadyProcessed).toBe(false);
   });
 
-  it("is idempotent: a duplicate callback carrying a gatewayReference already recorded as paid is a no-op, without touching the pending row", async () => {
-    PosTransaction.findOne = jest.fn((filter) =>
-      mockQuery(filter.paymentStatus === "paid" ? { _id: "already-paid-txn" } : pendingTxn())
-    );
+  it("is idempotent: a duplicate callback for a referenceId that's already paid is a no-op, without touching the row again", async () => {
+    // referenceId is unique PER ATTEMPT now — the same lookup that finds
+    // the pending row also finds it once it's already been paid, so a
+    // duplicate callback resolves to the same document, just already settled.
+    PosTransaction.findOne = jest.fn(() => mockQuery(pendingTxn({ paymentStatus: "paid" })));
 
     const result = await confirmPosPayment(REFERENCE_ID, { gatewayReference: "DBS-TXN-REF-001" });
 
@@ -752,9 +863,7 @@ describe("confirmPosPayment (shared confirmation dispatcher entrypoint — confi
   });
 
   it("marks an expired pending transaction expired and refuses to confirm it", async () => {
-    PosTransaction.findOne = jest.fn((filter) =>
-      mockQuery(filter.paymentStatus === "paid" ? null : pendingTxn({ expiresAt: new Date(Date.now() - 1000) }))
-    );
+    PosTransaction.findOne = jest.fn(() => mockQuery(pendingTxn({ expiresAt: new Date(Date.now() - 1000) })));
 
     await expect(confirmPosPayment(REFERENCE_ID, { gatewayReference: "DBS-TXN-REF-001" })).rejects.toMatch(/expired/);
 
@@ -762,17 +871,15 @@ describe("confirmPosPayment (shared confirmation dispatcher entrypoint — confi
     expect(PosTransaction.findOneAndUpdate).not.toHaveBeenCalled();
   });
 
-  it("rejects when there is no pending transaction for this order at all", async () => {
+  it("rejects when no transaction matches this reference at all", async () => {
     PosTransaction.findOne = jest.fn(() => mockQuery(null));
 
-    await expect(confirmPosPayment(REFERENCE_ID, { gatewayReference: "DBS-TXN-REF-001" })).rejects.toMatch(/No pending payment found/);
+    await expect(confirmPosPayment(REFERENCE_ID, { gatewayReference: "DBS-TXN-REF-001" })).rejects.toMatch(/No payment found/);
   });
 
   it("treats a payment against an already-confirmed order as a balance top-up, recomputing paymentStatus from all paid transactions instead of creating a second booking", async () => {
     PosOrder.findOne = jest.fn(() => mockQuery(pendingOrder({ orderStatus: "confirmed", bookingId: BOOKING_ID })));
-    PosTransaction.findOne = jest.fn((filter) =>
-      mockQuery(filter.paymentStatus === "paid" ? null : pendingTxn({ bookingId: BOOKING_ID, amount: 75 }))
-    );
+    PosTransaction.findOne = jest.fn(() => mockQuery(pendingTxn({ bookingId: BOOKING_ID, amount: 75 })));
     PosTransaction.findOneAndUpdate = jest.fn(async () => pendingTxn({ bookingId: BOOKING_ID, amount: 75, paymentStatus: "paid" }));
     PosBooking.findById = jest.fn(() =>
       mockQuery({
@@ -831,5 +938,92 @@ describe("writePosBookingOnly (books the fixed amount an already-paid PENDING tr
     expect(PosTransaction.findByIdAndUpdate).toHaveBeenCalledWith("999999999999999999999999", { bookingId: BOOKING_ID });
     expect(PosOrder.findByIdAndUpdate).toHaveBeenCalledWith(ORDER_ID, { orderStatus: "confirmed", bookingId: BOOKING_ID });
     expect(booking._id).toBe(BOOKING_ID);
+  });
+});
+
+describe("listBookings (POS Transactions list) — payment-mode display for partial, multi-mode bookings", () => {
+  it("returns every distinct PAID mode a booking's installments landed on, oldest first, deduped — not just the booking's own first-payment mode", async () => {
+    const booking = {
+      _id: BOOKING_ID,
+      bookingNumber: "BK202609100001",
+      orderId: { orderNumber: "POS202609100001", referenceId: REFERENCE_ID },
+      customer: { _id: CUSTOMER_ID, customerCode: "CUS001", name: "Test Customer" },
+      lines: [{ refType: "Service" }],
+      subtotal: 200,
+      gstAmount: 0,
+      grandTotal: 200,
+      paymentModeName: "CASH",
+      paymentStatus: "paid",
+      bookingStatus: "confirmed",
+      bookedAt: new Date("2026-09-10"),
+    };
+    PosBooking.find = jest.fn(() => mockQuery([booking]));
+    PosBooking.countDocuments = jest.fn(async () => 1);
+    PosTransaction.find = jest.fn(() =>
+      mockQuery([
+        {
+          bookingId: BOOKING_ID,
+          receiptNo: "RCP-20260910-0001",
+          amount: 100,
+          paymentStatus: "paid",
+          paymentModeName: "CASH",
+          transactionDate: new Date("2026-09-10T10:00:00Z"),
+        },
+        // A cancelled pending attempt on a third mode must NOT show up —
+        // only "paid" installments actually landed money.
+        {
+          bookingId: BOOKING_ID,
+          receiptNo: "RCP-20260910-0002",
+          amount: 100,
+          paymentStatus: "cancelled",
+          paymentModeName: "CREDIT CARD",
+          transactionDate: new Date("2026-09-10T10:05:00Z"),
+        },
+        {
+          bookingId: BOOKING_ID,
+          receiptNo: "RCP-20260910-0003",
+          amount: 100,
+          paymentStatus: "paid",
+          paymentModeName: "PAYNOW",
+          transactionDate: new Date("2026-09-10T10:10:00Z"),
+        },
+      ])
+    );
+
+    const res = mockRes();
+    await listBookings({ query: {} }, res);
+
+    const item = res.json.mock.calls[0][0].data.items[0];
+    expect(item.paymentModeNames).toEqual(["CASH", "PAYNOW"]);
+    // The booking's own single-mode field is left untouched for whatever
+    // else still reads it (e.g. the detail drawer).
+    expect(item.paymentModeName).toBe("CASH");
+    expect(item.amountPaid).toBe(200);
+  });
+
+  it("falls back to the booking's own paymentModeName when it has no paid transactions at all (shouldn't happen in practice, but never render an empty list)", async () => {
+    const booking = {
+      _id: BOOKING_ID,
+      bookingNumber: "BK202609100002",
+      orderId: { orderNumber: "POS202609100002", referenceId: REFERENCE_ID },
+      customer: null,
+      lines: [],
+      subtotal: 0,
+      gstAmount: 0,
+      grandTotal: 0,
+      paymentModeName: "CASH",
+      paymentStatus: "pending",
+      bookingStatus: "confirmed",
+      bookedAt: new Date("2026-09-10"),
+    };
+    PosBooking.find = jest.fn(() => mockQuery([booking]));
+    PosBooking.countDocuments = jest.fn(async () => 1);
+    PosTransaction.find = jest.fn(() => mockQuery([]));
+
+    const res = mockRes();
+    await listBookings({ query: {} }, res);
+
+    const item = res.json.mock.calls[0][0].data.items[0];
+    expect(item.paymentModeNames).toEqual(["CASH"]);
   });
 });

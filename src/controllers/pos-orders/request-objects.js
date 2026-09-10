@@ -66,10 +66,23 @@ const initiateNetsByReferenceSchema = Joi.object({
   amount: Joi.number().greater(0).precision(2).required(),
 });
 
+/**
+ * POST /pos/booking/manual-confirm — a cashier keys in the transaction
+ * reference number printed on the NETS/Credit Card terminal's slip instead
+ * of waiting for the terminal's own automatic callback. `transactionRefNo`
+ * becomes the confirmed PosTransaction's `gatewayReference`, exactly like a
+ * real terminal callback would set it — see confirmPosPayment.
+ */
+const manualTerminalConfirmSchema = Joi.object({
+  referenceId: Joi.string().trim().required(),
+  transactionRefNo: Joi.string().trim().min(1).max(100).required(),
+});
+
 module.exports = {
   cartLineSchema,
   createOrderSchema,
   confirmOrderSchema,
   recordPaymentSchema,
   initiateNetsByReferenceSchema,
+  manualTerminalConfirmSchema,
 };
