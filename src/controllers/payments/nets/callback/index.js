@@ -67,12 +67,29 @@ async function netsCallback(req, res) {
 
     const { error, value } = netsCallbackSchema.validate(req.body ?? {});
     if (error) throw error.details[0].message;
-    const { referenceId, gatewayReference, amount, terminalId, approvalCode } = value;
+    const { referenceId, gatewayReference, amount, terminalId, approvalCode, terminalResponse } = value;
+
+    // The genuine terminal-machine confirmation record — see
+    // PosTransaction.terminalConfirmationDetails' own comment. Only built
+    // when the EXE actually sent something to capture, so an older EXE
+    // build that only sends the bare {gatewayReference, amount} pair still
+    // confirms the payment normally, just with this left null (same as it
+    // is today).
+    const terminalConfirmationDetails =
+      terminalId || approvalCode || terminalResponse
+        ? {
+            terminalId: terminalId || null,
+            approvalCode: approvalCode || null,
+            response: terminalResponse || null,
+            confirmedAt: new Date(),
+          }
+        : undefined;
 
     const result = await dispatchPaymentConfirmation(referenceId, {
       amount,
       gatewayReference,
       processedBy: null,
+      terminalConfirmationDetails,
     });
 
     // confirmPosPayment() returns booking `_id` on a fresh confirmation, but

@@ -17,6 +17,12 @@ const { buildPaynowQrForOrder } = require("../../../../pos-orders");
 const generatePaynowQr = require("../index");
 
 const REFERENCE_ID = "POS23456789AB"; // 3-char prefix + 10-char body = 13
+// buildPaynowQrForOrder mints a FRESH per-attempt reference for the pending
+// transaction it creates — deliberately a different value than the order-
+// level REFERENCE_ID the request comes in with, so these tests actually
+// exercise that the route maps buildPaynowQrForOrder's own referenceId
+// through, not the request's.
+const TXN_REFERENCE_ID = "POSFRESHATTMPT";
 
 function mockRes() {
   return { status: jest.fn().mockReturnThis(), json: jest.fn().mockReturnThis() };
@@ -25,7 +31,12 @@ function mockRes() {
 describe("generatePaynowQr (HTTP wrapper around buildPaynowQrForOrder)", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    buildPaynowQrForOrder.mockResolvedValue({ amount: 175, qr: "data:image/png;base64,QkFTRTY0SU1BR0U=", engine: "dummy" });
+    buildPaynowQrForOrder.mockResolvedValue({
+      referenceId: TXN_REFERENCE_ID,
+      amount: 175,
+      qr: "data:image/png;base64,QkFTRTY0SU1BR0U=",
+      engine: "dummy",
+    });
   });
 
   it("rejects a malformed referenceId without calling buildPaynowQrForOrder", async () => {
@@ -56,7 +67,7 @@ describe("generatePaynowQr (HTTP wrapper around buildPaynowQrForOrder)", () => {
     expect(buildPaynowQrForOrder).toHaveBeenCalledWith({ referenceId: REFERENCE_ID, amount: undefined, processedBy: null });
   });
 
-  it("maps buildPaynowQrForOrder's result onto the response as referenceId/amount/qrImage/engine", async () => {
+  it("maps buildPaynowQrForOrder's result onto the response as referenceId/amount/qrImage/engine — the TRANSACTION's own fresh reference, not the order-level one the request carried", async () => {
     const req = { body: { referenceId: REFERENCE_ID } };
     const res = mockRes();
 
@@ -66,7 +77,7 @@ describe("generatePaynowQr (HTTP wrapper around buildPaynowQrForOrder)", () => {
       expect.objectContaining({
         success: true,
         data: {
-          referenceId: REFERENCE_ID,
+          referenceId: TXN_REFERENCE_ID,
           amount: 175,
           qrImage: "data:image/png;base64,QkFTRTY0SU1BR0U=",
           engine: "dummy",

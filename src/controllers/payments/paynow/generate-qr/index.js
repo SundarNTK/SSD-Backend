@@ -35,10 +35,16 @@ async function generatePaynowQr(req, res) {
   try {
     const { error, value } = schema.validate(req.body);
     if (error) throw error.details[0].message;
-    const { referenceId, amount: requestedAmount } = value;
+    const { referenceId: orderReferenceId, amount: requestedAmount } = value;
 
-    const { amount, qr, engine } = await buildPaynowQrForOrder({
-      referenceId,
+    // `referenceId` in the response is the freshly-minted PER-ATTEMPT
+    // reference buildPaynowQrForOrder's pending transaction just got — NOT
+    // the order-level `orderReferenceId` this request came in with. See
+    // that function's own comment for why: this is what's actually
+    // embedded in the QR and what the caller (Pay Again) must poll/confirm
+    // against.
+    const { referenceId, amount, qr, engine } = await buildPaynowQrForOrder({
+      referenceId: orderReferenceId,
       amount: requestedAmount,
       processedBy: req.auth?.userId ?? null,
     });

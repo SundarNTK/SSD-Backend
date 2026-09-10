@@ -23,7 +23,10 @@
  * parallel one, so idempotency (confirming the same pending payment twice)
  * is inherited for free from confirmPosPayment's own atomic claim.
  *
- * Endpoints:
+ * Endpoints (`:referenceId` throughout is the PosTransaction's own
+ * per-attempt reference — see models/pos-transactions' own comment — NOT
+ * the order's; a booking topped up more than once has one of these per
+ * installment, not one shared across all of them):
  *   GET  /pos-order-confirmation/pending              — awaiting-confirmation list
  *   GET  /pos-order-confirmation/pending/:referenceId  — one pending payment's full detail
  *   POST /pos-order-confirmation/:referenceId/confirm  — manual confirmation
@@ -57,13 +60,15 @@ function isNonCash(paymentModeName) {
  * One row per PENDING PosTransaction — the single fixed-amount payment
  * attempt a QR is currently open for. Keyed off the transaction itself
  * (not the order/booking): it's the transaction that carries the fixed
- * amount and expiry, and createPendingPayment() guarantees at most one
- * active PENDING transaction per order at a time (a fresh QR cancels any
- * prior one first — see that function's own comment on worst case #1), so
- * there's no risk of the same order appearing here twice. Once a row is
- * confirmed (paymentStatus flips to "paid") or its `expiresAt` passes, it
- * simply stops matching this query — no separate "remove from list" step
- * exists or is needed anywhere else.
+ * amount, expiry, and (see models/pos-transactions) its own unique
+ * `referenceId` — createPendingPayment() still cancels any earlier pending
+ * attempt for the same order as a matter of hygiene (see that function's
+ * own comment), so there's still no risk of the same order appearing here
+ * twice, but confirmManually below now resolves a PosTransaction directly
+ * by this exposed `referenceId`, not by finding "the order's one pending
+ * row" the way it used to. Once a row is confirmed (paymentStatus flips to
+ * "paid") or its `expiresAt` passes, it simply stops matching this query —
+ * no separate "remove from list" step exists or is needed anywhere else.
  */
 async function listPending(req, res) {
   try {
@@ -74,16 +79,19 @@ async function listPending(req, res) {
       PosTransaction.notDeletedFilter({ paymentStatus: "pending", expiresAt: { $gt: new Date() } })
     )
       .populate("customer", "name customerCode")
-      .populate("orderId", "referenceId orderNumber")
-      .select("orderId bookingId customer paymentModeName amount expiresAt transactionDate")
+      .populate("orderId", "orderNumber")
+      .select("referenceId orderId bookingId customer paymentModeName amount expiresAt transactionDate")
       .sort({ transactionDate: -1 });
 
     let items = transactions
-      .filter((t) => isNonCash(t.paymentModeName) && t.orderId?.referenceId)
+      .filter((t) => isNonCash(t.paymentModeName) && t.referenceId)
       .map((t) => ({
         transactionId: t._id,
-        referenceId: t.orderId.referenceId,
-        orderNumber: t.orderId.orderNumber ?? null,
+        // The transaction's own per-attempt reference — see the model's
+        // own comment. This is what confirmManually's URL param resolves
+        // to now, not the order's.
+        referenceId: t.referenceId,
+        orderNumber: t.orderId?.orderNumber ?? null,
         // A pending row already carrying a bookingId is a top-up on an
         // already-confirmed booking; one with none is an order's first
         // payment — same distinction the earlier list-merge design made,
@@ -118,20 +126,24 @@ async function listPending(req, res) {
 
 /**
  * GET /pos-order-confirmation/pending/:referenceId
+ *
+ * `referenceId` here is the PosTransaction's own per-attempt reference
+ * (see that model's own comment) — this now looks the pending row up
+ * directly, then loads its order, rather than the other way around.
  */
 async function getPendingDetail(req, res) {
   try {
     const { referenceId } = req.params;
 
-    const order = await PosOrder.findOne(PosOrder.notDeletedFilter({ referenceId }))
-      .populate("customer", "customerCode name email mobileNumber")
-      .populate("lines.deities", "name");
-    if (!order) throw "No order found for this reference.";
-
     const pending = await PosTransaction.findOne(
-      PosTransaction.notDeletedFilter({ orderId: order._id, paymentStatus: "pending", expiresAt: { $gt: new Date() } })
+      PosTransaction.notDeletedFilter({ referenceId, paymentStatus: "pending", expiresAt: { $gt: new Date() } })
     );
     if (!pending) throw "No pending payment found for this reference — it may already be confirmed, cancelled, or expired.";
+
+    const order = await PosOrder.findOne(PosOrder.notDeletedFilter({ _id: pending.orderId }))
+      .populate("customer", "customerCode name email mobileNumber")
+      .populate("lines.deities", "name");
+    if (!order) throw "No order found for this payment.";
 
     // A top-up's lines/total are the booking's own (the order's own
     // snapshot predates however much has already been paid); a first
@@ -151,7 +163,9 @@ async function getPendingDetail(req, res) {
     return responseHandler({
       res,
       response: {
-        referenceId: order.referenceId,
+        // The transaction's own reference — what confirmManually's URL
+        // param must be, not order.referenceId.
+        referenceId: pending.referenceId,
         orderNumber: order.orderNumber,
         bookingNumber,
         kind: pending.bookingId ? "balance_due" : "new_payment",
