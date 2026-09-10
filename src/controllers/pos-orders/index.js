@@ -36,7 +36,7 @@ const { sortLineDeities } = require("../../common/utils/sort-line-deities");
 const { responseHandler, exceptionHandler } = require("../../utilities/handlers");
 const { nextSequence } = require("../../common/utils/sequence");
 const { withUniqueReferenceId, ORIGIN_PREFIXES } = require("../../common/utils/payment-reference");
-const { registerPaymentHandler } = require("../payments/dispatch");
+const { registerPaymentHandler, dispatchPaymentConfirmation } = require("../payments/dispatch");
 // Pure QR-image rendering, no dependency back on this module — see that
 // file's own comment for why this has to be the direction the require goes
 // (payments/paynow/generate-qr/index.js already requires THIS module for
@@ -62,7 +62,13 @@ const {
 const { effectiveQuantity } = require("../../common/utils/effective-quantity");
 const { loadPosVisibleHierarchy, offeringInPosHierarchy } = require("../../common/utils/pos-catalogue-visibility");
 
-const { createOrderSchema, confirmOrderSchema, recordPaymentSchema, initiateNetsByReferenceSchema } = require("./request-objects");
+const {
+  createOrderSchema,
+  confirmOrderSchema,
+  recordPaymentSchema,
+  initiateNetsByReferenceSchema,
+  manualTerminalConfirmSchema,
+} = require("./request-objects");
 
 // ─── helpers ──────────────────────────────────────────────────────────────
 
@@ -603,7 +609,7 @@ async function listBookings(req, res) {
 
     const bookingIds = bookings.map((b) => b._id);
     const transactions = await PosTransaction.find(PosTransaction.notDeletedFilter({ bookingId: { $in: bookingIds } }))
-      .select("bookingId receiptNo amount paymentStatus transactionDate")
+      .select("bookingId receiptNo amount paymentStatus paymentModeName transactionDate")
       .sort({ transactionDate: 1 });
     const transactionsByBooking = new Map();
     for (const t of transactions) {
@@ -615,6 +621,18 @@ async function listBookings(req, res) {
     const items = bookings.map((b) => {
       const bookingTxns = transactionsByBooking.get(String(b._id)) ?? [];
       const amountPaid = sumPaidAmount(bookingTxns);
+      // A partial-payment booking can collect its installments on different
+      // modes (e.g. Cash first, PayNow for the balance) — the booking's own
+      // paymentModeName only ever records the FIRST one. Every mode that
+      // actually landed money is what the list should show, oldest first,
+      // deduped (two Cash installments still show as just "Cash").
+      const paidModeNames = [];
+      const seenModeNames = new Set();
+      for (const t of bookingTxns) {
+        if (t.paymentStatus !== "paid" || seenModeNames.has(t.paymentModeName)) continue;
+        seenModeNames.add(t.paymentModeName);
+        paidModeNames.push(t.paymentModeName);
+      }
       return {
         _id: b._id,
         bookingNumber: b.bookingNumber,
@@ -626,6 +644,7 @@ async function listBookings(req, res) {
           : null,
         lineType: deriveLineType(b.lines),
         paymentModeName: b.paymentModeName,
+        paymentModeNames: paidModeNames.length ? paidModeNames : [b.paymentModeName],
         subtotal: b.subtotal,
         gstAmount: b.gstAmount,
         grandTotal: b.grandTotal,
@@ -905,6 +924,17 @@ const PAYMENT_ATTEMPT_TTL_MS = 15 * 60 * 1000; // 15 minutes to scan & pay one Q
  * own Cash-exclusion filter hide it, since Cash never needs manual
  * confirmation).
  *
+ * The created transaction gets its OWN fresh `referenceId` (see the
+ * model's own comment) — this function's `referenceId` parameter is only
+ * ever used to look up WHICH ORDER this new attempt belongs to; it is
+ * never reused as the new row's own reference. This matters in practice:
+ * a booking that's topped up more than once on PayNow/NETS used to have
+ * every one of those QR codes/terminal prompts carry the SAME order-level
+ * reference, which a real gateway/terminal can refuse or mis-reconcile on
+ * the second live attempt (it's already seen that exact reference settle
+ * once) — see confirmPosPayment's own comment for the matching half of
+ * this fix.
+ *
  * @returns {Promise<{ order: PosOrder, transaction: PosTransaction }>}
  */
 async function createPendingPayment({ referenceId, amount: requestedAmount, paymentMode, paymentModeName, processedBy }) {
@@ -919,26 +949,34 @@ async function createPendingPayment({ referenceId, amount: requestedAmount, paym
   }
   const amount = requestedAmount != null ? requestedAmount : balance;
 
+  // Still worth cancelling a still-open earlier attempt for the same order
+  // (avoids a customer later scanning/paying a stale, abandoned QR) — but
+  // this is now pure hygiene, not a correctness requirement: each row's own
+  // unique referenceId means confirmPosPayment can never confuse one
+  // attempt for another even if more than one were somehow left pending.
   await PosTransaction.updateMany(
     { orderId: order._id, paymentStatus: "pending" },
     { $set: { paymentStatus: "cancelled" } }
   );
 
   const receiptNo = await generateReceiptNumber();
-  const transaction = await PosTransaction.create({
-    receiptNo,
-    orderId: order._id,
-    bookingId: order.bookingId ?? null,
-    customer: order.customer,
-    paymentMode: paymentMode ?? order.paymentMode,
-    paymentModeName: paymentModeName ?? order.paymentModeName,
-    amount,
-    paymentStatus: "pending",
-    expiresAt: new Date(Date.now() + PAYMENT_ATTEMPT_TTL_MS),
-    transactionDate: new Date(),
-    processedBy: processedBy ?? null,
-    createdBy: processedBy ?? null,
-  });
+  const transaction = await withUniqueReferenceId(ORIGIN_PREFIXES.POS, (txnReferenceId) =>
+    PosTransaction.create({
+      referenceId: txnReferenceId,
+      receiptNo,
+      orderId: order._id,
+      bookingId: order.bookingId ?? null,
+      customer: order.customer,
+      paymentMode: paymentMode ?? order.paymentMode,
+      paymentModeName: paymentModeName ?? order.paymentModeName,
+      amount,
+      paymentStatus: "pending",
+      expiresAt: new Date(Date.now() + PAYMENT_ATTEMPT_TTL_MS),
+      transactionDate: new Date(),
+      processedBy: processedBy ?? null,
+      createdBy: processedBy ?? null,
+    })
+  );
 
   return { order, transaction };
 }
@@ -956,6 +994,15 @@ async function createPendingPayment({ referenceId, amount: requestedAmount, paym
  * comment: this function only ever generates a PayNow QR, so its pending
  * transaction must always read as PayNow, regardless of what mode the
  * order was originally created/booked under.
+ *
+ * `referenceId` in, `referenceId` out are DIFFERENT values on purpose: the
+ * one passed in identifies the ORDER (to find which one this QR is for);
+ * the one returned is the freshly-minted PER-ATTEMPT reference
+ * createPendingPayment just gave the new pending transaction — THAT is
+ * what actually gets embedded in the QR as its EMVCo Bill Number
+ * (build-payload.js) and echoed back in DBS's ICN, so every QR this
+ * function ever renders — the order's first payment or its fifth top-up —
+ * carries a reference no other QR has ever carried.
  */
 async function buildPaynowQrForOrder({ referenceId, amount, processedBy }) {
   assertPaynowConfigured();
@@ -973,7 +1020,7 @@ async function buildPaynowQrForOrder({ referenceId, amount, processedBy }) {
 
   let qrImage, engine;
   try {
-    ({ qrImage, engine } = await renderQrImage(referenceId, transaction.amount));
+    ({ qrImage, engine } = await renderQrImage(transaction.referenceId, transaction.amount));
   } catch (renderError) {
     // The pending payment this QR promised is unconfirmable with no QR ever
     // shown for it — cancel it rather than leaving a ghost entry an admin
@@ -983,7 +1030,7 @@ async function buildPaynowQrForOrder({ referenceId, amount, processedBy }) {
     throw renderError;
   }
 
-  return { amount: transaction.amount, qr: qrImage, engine };
+  return { referenceId: transaction.referenceId, amount: transaction.amount, qr: qrImage, engine };
 }
 
 /**
@@ -1008,6 +1055,13 @@ async function buildPaynowQrForOrder({ referenceId, amount, processedBy }) {
  * Works for both an order's first payment and a top-up on an
  * already-confirmed booking, same as buildPaynowQrForOrder — see
  * createPendingPayment's own doc comment.
+ *
+ * `referenceId` in identifies the ORDER; the `referenceId` this returns is
+ * the pending transaction's own FRESH per-attempt reference (see
+ * createPendingPayment/the model's own comment) — this is what's sent to
+ * the terminal as its `orderId`, and what the terminal/EXE echoes back on
+ * /payments/nets/callback, so a second top-up on the same booking never
+ * sends the terminal a reference it's already seen settle once.
  */
 async function initiateTerminalPayment({ referenceId, amount, processedBy, modeName }) {
   const mode = await PaymentMode.findOne(PaymentMode.notDeletedFilter({ name: modeName, status: 1 }));
@@ -1021,7 +1075,7 @@ async function initiateTerminalPayment({ referenceId, amount, processedBy, modeN
     processedBy,
   });
 
-  return { referenceId, amount: transaction.amount, currency: "SGD" };
+  return { referenceId: transaction.referenceId, amount: transaction.amount, currency: "SGD" };
 }
 
 async function initiateNetsPayment({ referenceId, amount, processedBy }) {
@@ -1098,6 +1152,53 @@ const initiateNetsByReferenceRoute = makeInitiateTerminalPaymentByReferenceRoute
 const initiateCreditCardByReferenceRoute = makeInitiateTerminalPaymentByReferenceRoute(initiateCreditCardPayment, "Credit Card");
 
 /**
+ * POST /pos/booking/manual-confirm
+ *
+ * Fallback for NETS/Credit Card when the terminal's own automatic
+ * confirmation (controllers/payments/nets/callback) hasn't landed, or the
+ * cashier would rather not wait for it — they read the transaction
+ * reference number off the terminal's printed slip and key it in here
+ * instead. Goes through the EXACT SAME dispatchPaymentConfirmation() ->
+ * confirmPosPayment() path a real terminal callback uses, referenceId
+ * lookup and all, so this works unchanged for a brand new order's first
+ * payment or a "Pay Again" balance top-up (see confirmPosPayment's own
+ * branching) and inherits its idempotency guarantee for free: if the
+ * terminal's automatic callback lands first (or a second manual attempt is
+ * submitted), confirmPosPayment recognizes the pending transaction is
+ * already claimed and reports `alreadyProcessed` instead of double-booking
+ * the payment.
+ *
+ * `manualConfirmationDetails` is what marks the resulting PosTransaction as
+ * manually confirmed rather than terminal-confirmed (see
+ * models/pos-transactions and confirmPosPayment's own $set) — left
+ * undefined, so never written, on the automatic callback path.
+ */
+async function manualConfirmTerminalPayment(req, res) {
+  try {
+    const { error, value } = manualTerminalConfirmSchema.validate(req.body ?? {});
+    if (error) throw error.details[0].message;
+
+    const result = await dispatchPaymentConfirmation(value.referenceId, {
+      gatewayReference: value.transactionRefNo,
+      processedBy: req.auth?.userId ?? null,
+      manualConfirmationDetails: {
+        transactionRefNo: value.transactionRefNo,
+        confirmedBy: req.auth?.userId ?? null,
+        confirmedAt: new Date(),
+      },
+    });
+
+    return responseHandler({
+      res,
+      response: result,
+      successMessage: result.alreadyProcessed ? "This payment was already confirmed." : "Payment confirmed manually.",
+    });
+  } catch (error) {
+    return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 400 : undefined });
+  }
+}
+
+/**
  * Writes the PosBooking for an order's first payment when that payment's
  * PosTransaction ALREADY exists (created pending by createPendingPayment,
  * now claimed paid by confirmPosPayment below) — unlike
@@ -1153,9 +1254,20 @@ async function writePosBookingOnly(order, amountNow, transaction) {
  * createPendingPayment() already created; does not create a new one and
  * does not accept a different amount than what that row already has.
  *
+ * `referenceId` identifies ONE SPECIFIC PAYMENT ATTEMPT, not the order —
+ * see PosTransaction.referenceId's own comment. This function looks the
+ * transaction up directly by it; it does NOT go through PosOrder first
+ * (an earlier version did — that meant every QR/terminal prompt for the
+ * same order, first payment or fifth top-up, carried one shared order-
+ * level reference, which is exactly what let a real gateway/terminal
+ * refuse or mis-reconcile a second live attempt against a booking it had
+ * already settled a payment for under that identical reference).
+ *
  * Idempotent two ways (worst case #2 — duplicate/racing confirmations):
- *   - A duplicate callback carrying a `gatewayReference` already recorded
- *     on a "paid" row is recognized and returned as a no-op.
+ *   - A duplicate callback for a referenceId whose row is ALREADY "paid"
+ *     is recognized and returned as a no-op — referenceId is unique per
+ *     attempt, so that row being paid already IS the duplicate signal, no
+ *     separate gatewayReference scan needed.
  *   - The actual pending -> paid transition is one atomic
  *     `findOneAndUpdate` guarded on `paymentStatus: "pending"` — if two
  *     confirmations for the same pending row race (e.g. a real webhook and
@@ -1164,31 +1276,33 @@ async function writePosBookingOnly(order, amountNow, transaction) {
  *     its update match nothing and reports alreadyProcessed instead of
  *     double-confirming.
  *
- * @param {string} referenceId
- * @param {{ amount?: number, gatewayReference?: string, processedBy?: ObjectId }} details
+ * @param {string} referenceId  the PosTransaction's own per-attempt reference
+ * @param {{ amount?: number, gatewayReference?: string, processedBy?: ObjectId,
+ *   manualConfirmationDetails?: object, terminalConfirmationDetails?: object }} details
  *   `amount`, if given (e.g. a real gateway's own reported amount), is only
  *   ever a cross-check against the pending transaction's own fixed amount —
- *   never a value that changes what gets confirmed.
+ *   never a value that changes what gets confirmed. The two `*Details`
+ *   fields are mutually exclusive in practice (manual admin confirm vs. a
+ *   real terminal callback) — see their own field comments on the model.
  */
 async function confirmPosPayment(referenceId, details = {}) {
-  const order = await PosOrder.findOne(PosOrder.notDeletedFilter({ referenceId }));
-  if (!order) throw `No POS order found for reference "${referenceId}".`;
-
-  if (details.gatewayReference) {
-    const already = await PosTransaction.findOne(
-      PosTransaction.notDeletedFilter({
-        orderId: order._id,
-        gatewayReference: details.gatewayReference,
-        paymentStatus: "paid",
-      })
-    );
-    if (already) return { alreadyProcessed: true, transactionId: already._id };
+  const pending = await PosTransaction.findOne(PosTransaction.notDeletedFilter({ referenceId }));
+  if (!pending) {
+    throw `No payment found for reference "${referenceId}" — the QR/terminal request may need to be regenerated.`;
   }
 
-  const pending = await PosTransaction.findOne(
-    PosTransaction.notDeletedFilter({ orderId: order._id, paymentStatus: "pending" })
-  );
-  if (!pending) throw `No pending payment found for reference "${referenceId}" — it may already be confirmed, or the QR needs to be regenerated.`;
+  // Duplicate callback for an attempt that already settled — this exact
+  // row already being "paid" is the whole signal now (see the module
+  // comment above), so this is checked before anything else.
+  if (pending.paymentStatus === "paid") {
+    return { alreadyProcessed: true, transactionId: pending._id };
+  }
+  if (pending.paymentStatus !== "pending") {
+    throw `This payment (reference "${referenceId}") is ${pending.paymentStatus} and can no longer be confirmed.`;
+  }
+
+  const order = await PosOrder.findOne(PosOrder.notDeletedFilter({ _id: pending.orderId }));
+  if (!order) throw `No POS order found for this payment.`;
 
   if (pending.expiresAt && pending.expiresAt < new Date()) {
     await PosTransaction.findByIdAndUpdate(pending._id, { paymentStatus: "expired" });
@@ -1213,6 +1327,10 @@ async function confirmPosPayment(referenceId, details = {}) {
         // path — undefined (and so left off `$set`) for a real gateway/
         // terminal webhook, so this stays null on that path.
         ...(details.manualConfirmationDetails !== undefined ? { manualConfirmationDetails: details.manualConfirmationDetails } : {}),
+        // Set only by controllers/payments/nets/callback (a genuine
+        // NETS/Credit Card terminal response) — undefined, so left off
+        // `$set`, for PayNow's ICN and for a manual confirm.
+        ...(details.terminalConfirmationDetails !== undefined ? { terminalConfirmationDetails: details.terminalConfirmationDetails } : {}),
       },
     },
     { new: true }
@@ -1268,6 +1386,7 @@ function registerPosOrderRoutes(r) {
   r.post("/nets/initiate", requirePermission("admin-booking", "fullAccess"), initiateNetsByReferenceRoute);
   r.post("/orders/:id/credit-card/initiate", requirePermission("admin-booking", "fullAccess"), initiateCreditCardPaymentRoute);
   r.post("/credit-card/initiate", requirePermission("admin-booking", "fullAccess"), initiateCreditCardByReferenceRoute);
+  r.post("/manual-confirm", requirePermission("admin-booking", "fullAccess"), manualConfirmTerminalPayment);
 
   r.get("/bookings", requirePermission("pos-transactions", "view"), listBookings);
   r.get("/bookings/:id", requirePermission("pos-transactions", "view"), getBookingDetail);
@@ -1300,4 +1419,6 @@ module.exports = {
   recordBookingPayment,
   writePosBookingFromOrder,
   writePosBookingOnly,
+  manualConfirmTerminalPayment,
+  listBookings,
 };
