@@ -70,7 +70,7 @@ const createSchema = Joi.object({
   generalLedger: objectId.required(),
   salePrice: Joi.number().min(0).required(),
   description: Joi.string().allow("").default(""),
-  image: Joi.string().allow("").default(null),
+  image: Joi.string().allow("", null).default(null),
 
   isDeityMappingRequired: Joi.boolean().default(false),
   deityMapping: deityMappingField,
@@ -101,7 +101,7 @@ const updateSchema = Joi.object({
   generalLedger: objectId,
   salePrice: Joi.number().min(0),
   description: Joi.string().allow(""),
-  image: Joi.string().allow(""),
+  image: Joi.string().allow("", null),
 
   isDeityMappingRequired: Joi.boolean(),
   deityMapping: deityMappingFieldForUpdate,

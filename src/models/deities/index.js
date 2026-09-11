@@ -6,6 +6,7 @@ const deitySchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
   tamilName: { type: String, default: "" },
   printingGroup: { type: mongoose.Schema.Types.ObjectId, ref: "PrintingGroup", required: true },
+  image: { type: String, default: null }, // full Cloudinary secure_url
   // Admin-entered ordering — every place a deity list is shown or offered
   // for SELECTION (Deity Master itself, the Item/Service/Event "Deity
   // Mapping" pickers, the POS cart's Deities multi-select) sorts by this

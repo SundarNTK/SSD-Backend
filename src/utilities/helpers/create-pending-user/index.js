@@ -28,6 +28,7 @@ async function createPendingUser({
   status = 1,
   accessUpto = null,
   posAccess = false,
+  hallMealAccess = false,
 }) {
   if (await isUserEmailTaken(email)) throw "An account with this email already exists.";
   if (mobileNumber && (await isUserMobileTaken(mobileNumber))) {
@@ -47,6 +48,7 @@ async function createPendingUser({
     status,
     accessUpto,
     posAccess,
+    hallMealAccess,
     createdBy: createdBy || null,
     activationTokenHash: hashToken(rawToken),
     // Null on purpose — the invitation stays valid until it's used. See

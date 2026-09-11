@@ -1,6 +1,7 @@
 const express = require("express");
 const authGuard = require("../common/middleware/auth-guard");
 const adminOnly = require("../common/middleware/admin-only");
+const hallMealAccessOnly = require("../common/middleware/hall-meal-access-only");
 const authRoutes = require("../controllers/auth");
 const emailTemplateRoutes = require("../controllers/email-templates");
 const emailTemplateMappingRoutes = require("../controllers/email-template-mappings");
@@ -30,6 +31,13 @@ const inventoryRoutes = require("../controllers/inventory");
 const paymentsRoutes = require("../controllers/payments");
 const posOrderConfirmationRoutes = require("../controllers/pos-order-confirmation");
 const reportsRoutes = require("../controllers/reports");
+const hallCategoryRoutes = require("../controllers/hall-categories");
+const hallRoutes = require("../controllers/halls");
+const hallPurposeRoutes = require("../controllers/hall-purposes");
+const additionalServiceRoutes = require("../controllers/additional-services");
+const hallPackageRoutes = require("../controllers/hall-packages");
+const foodMenuItemRoutes = require("../controllers/food-menu-items");
+const foodPackageRoutes = require("../controllers/food-packages");
 
 const router = express.Router();
 
@@ -110,6 +118,27 @@ mastersRouter.use(nakshathiramRoutes);
 mastersRouter.use(paymentModeRoutes);
 mastersRouter.use(translateRoutes);
 router.use("/masters", mastersRouter);
+
+/**
+ * Hall & Meal Management masters — deliberately its own router group, not
+ * folded into `mastersRouter` above, because it needs a different guard.
+ * `mastersRouter`'s masters are delegable: a Role can be granted view/edit/
+ * fullAccess on each via `requirePermission`. These seven are gated
+ * instead on the `hallMealAccess` flag on the account itself
+ * (`hallMealAccessOnly`) — not even every Super Admin passes this, only
+ * whichever account(s) have that flag set. See
+ * common/middleware/hall-meal-access-only.js for the reasoning.
+ */
+const hallMealRouter = express.Router();
+hallMealRouter.use(authGuard, hallMealAccessOnly);
+hallMealRouter.use(hallCategoryRoutes);
+hallMealRouter.use(hallRoutes);
+hallMealRouter.use(hallPurposeRoutes);
+hallMealRouter.use(additionalServiceRoutes);
+hallMealRouter.use(hallPackageRoutes);
+hallMealRouter.use(foodMenuItemRoutes);
+hallMealRouter.use(foodPackageRoutes);
+router.use("/hall-meal", hallMealRouter);
 
 router.use("/pos", posRoutes);
 // Customer tablet display — GET is public (pairing code); POST/PUT are staff-gated

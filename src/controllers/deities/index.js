@@ -1,6 +1,7 @@
 const express = require("express");
 const requirePermission = require("../../common/middleware/require-permission");
 const validateBody = require("../../common/middleware/validate");
+const { uploadDeityImage, hydrateMultipartBody } = require("../../common/middleware/upload");
 const makeCrudController = require("../../common/factories/crud-controller");
 
 const Deity = require("../../models/deities");
@@ -31,8 +32,22 @@ const crud = makeCrudController(Deity, {
 });
 
 router.get("/deities", requirePermission("deities", "view"), crud.list);
-router.post("/deities", requirePermission("deities", "fullAccess"), validateBody(createSchema), crud.create);
-router.put("/deities/:id", requirePermission("deities", "edit"), validateBody(updateSchema), crud.update);
+router.post(
+  "/deities",
+  requirePermission("deities", "fullAccess"),
+  uploadDeityImage,
+  hydrateMultipartBody,
+  validateBody(createSchema),
+  crud.create
+);
+router.put(
+  "/deities/:id",
+  requirePermission("deities", "edit"),
+  uploadDeityImage,
+  hydrateMultipartBody,
+  validateBody(updateSchema),
+  crud.update
+);
 router.delete("/deities/:id", requirePermission("deities", "fullAccess"), crud.remove);
 
 module.exports = router;
