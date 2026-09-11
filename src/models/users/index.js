@@ -48,6 +48,15 @@ const userSchema = new mongoose.Schema({
   // POS login screen and every /pos/booking/* route both check it.
   posAccess: { type: Boolean, default: false },
 
+  // Same shape as posAccess, for the same reason: the Hall & Meal masters
+  // (Hall Category, Hall, Hall Purpose, Additional Service, Hall Package,
+  // Food Menu Item, Food Package) are deliberately not part of the Role/
+  // permission system at all — see AVAILABLE_MODULES and
+  // common/middleware/hall-meal-access-only.js. Being SUPER_ADMIN does NOT
+  // imply this; it's off by default even for other Super Admin accounts,
+  // and is only ever turned on for the one account this area is meant for.
+  hallMealAccess: { type: Boolean, default: false },
+
   // --- activation (first "set your password" link) ---
   //
   // `activationTokenExpiresAt` is null for accounts created from the User
@@ -125,6 +134,7 @@ userSchema.methods.toSessionUser = function toSessionUser() {
     userType: this.userType,
     profileImage: this.profileImage,
     posAccess: this.posAccess,
+    hallMealAccess: this.hallMealAccess,
     entityId: defaultAssignment ? String(defaultAssignment.entity) : null,
     paginationCount: this.paginationCount,
   };

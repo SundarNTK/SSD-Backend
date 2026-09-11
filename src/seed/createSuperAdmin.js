@@ -6,6 +6,13 @@
  *
  * Usage:
  *   pnpm run create:super-admin -- --name "Your Name" --email you@example.com
+ *
+ * Pass --hall-meal-access to also turn on the `hallMealAccess` flag (see
+ * models/users and common/middleware/hall-meal-access-only.js) — the Hall
+ * & Meal Management masters are visible only to whichever account(s) carry
+ * this flag, never to Super Admin accounts in general. Omit it for a plain
+ * Super Admin with no Hall & Meal access, which is the default for every
+ * account including ones created by this same script without the flag.
  */
 require("dotenv").config();
 const env = require("../config/env");
@@ -20,21 +27,24 @@ const { ensureDefaultEmailTemplates } = require("./seedEmailTemplates");
 const sendTemplatedEmail = require("../utilities/helpers/send-templated-email");
 
 function parseArgs() {
-  const args = {};
+  const args = { hallMealAccess: false };
   const argv = process.argv.slice(2);
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--name") args.name = argv[++i];
     if (argv[i] === "--email") args.email = argv[++i];
     if (argv[i] === "--mobile") args.mobileNumber = argv[++i];
+    if (argv[i] === "--hall-meal-access") args.hallMealAccess = true;
   }
   return args;
 }
 
 async function run() {
-  const { name, email, mobileNumber } = parseArgs();
+  const { name, email, mobileNumber, hallMealAccess } = parseArgs();
 
   if (!name || !email) {
-    console.error("\nUsage: pnpm run create:super-admin -- --name \"Your Name\" --email you@example.com [--mobile +6591234567]\n");
+    console.error(
+      "\nUsage: pnpm run create:super-admin -- --name \"Your Name\" --email you@example.com [--mobile +6591234567] [--hall-meal-access]\n"
+    );
     process.exit(1);
   }
 
@@ -64,6 +74,7 @@ async function run() {
     userType: USER_TYPES.SUPER_ADMIN,
     entityId: entity._id,
     roleIds: [roles["System Admin"]._id],
+    hallMealAccess,
   });
 
   // Both pools — staff are devotees too. See customer.service.js.
@@ -80,6 +91,7 @@ async function run() {
   console.log(`    name: ${user.name}`);
   console.log(`    email: ${user.email}`);
   console.log(`    entity: ${entity.code}`);
+  console.log(`    hall & meal access: ${hallMealAccess ? "YES" : "no"}`);
   console.log(`    devotee profile: ${profile.customerCode}`);
   console.log(`    activation link (DRY_RUN — use this directly): ${activationUrl}\n`);
 
