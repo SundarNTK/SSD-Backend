@@ -148,6 +148,13 @@ describe("createOrder (Cash flow, pos_orders)", () => {
     expect(PosTransaction.create).toHaveBeenCalledWith(
       expect.objectContaining({ bookingId: BOOKING_ID, orderId: ORDER_ID, amount: 175, paymentStatus: "paid" })
     );
+    // Regression guard: a Cash transaction must never pass an explicit
+    // `referenceId` (not even null). The field's unique+sparse index only
+    // excludes documents where it's truly absent — a stray `referenceId:
+    // null` here would make the SECOND Cash sale ever collide with the
+    // first on that index (E11000), which is exactly what happened in
+    // production before this field's schema default was removed.
+    expect(Object.prototype.hasOwnProperty.call(PosTransaction.create.mock.calls[0][0], "referenceId")).toBe(false);
     expect(PosOrder.findByIdAndUpdate).toHaveBeenCalledWith(ORDER_ID, { orderStatus: "confirmed", bookingId: BOOKING_ID });
     expect(consumeReservations).toHaveBeenCalledWith(ORDER_ID, expect.any(Array), USER_ID, expect.any(String));
     expect(res.status).toHaveBeenCalledWith(201);
@@ -487,6 +494,9 @@ describe("recordBookingPayment (collect the rest, pos_bookings)", () => {
     expect(PosTransaction.create).toHaveBeenCalledWith(
       expect.objectContaining({ bookingId: BOOKING_ID, amount: 75, paymentStatus: "paid", paymentModeName: "Cash" })
     );
+    // Same regression guard as the create-order Cash flow above — a Cash
+    // top-up must not pass an explicit `referenceId` either.
+    expect(Object.prototype.hasOwnProperty.call(PosTransaction.create.mock.calls[0][0], "referenceId")).toBe(false);
     expect(res.json).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ paymentStatus: "paid", amountPaid: 175, balanceAmount: 0 }) })
     );
