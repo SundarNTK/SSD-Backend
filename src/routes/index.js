@@ -38,6 +38,9 @@ const additionalServiceRoutes = require("../controllers/additional-services");
 const hallPackageRoutes = require("../controllers/hall-packages");
 const foodMenuItemRoutes = require("../controllers/food-menu-items");
 const foodPackageRoutes = require("../controllers/food-packages");
+const hallAvailabilityRoutes = require("../controllers/hall-availability");
+const hallBookingRoutes = require("../controllers/hall-bookings");
+const hallBookingManageRoutes = require("../controllers/hall-bookings/manage");
 
 const router = express.Router();
 
@@ -138,6 +141,9 @@ hallMealRouter.use(additionalServiceRoutes);
 hallMealRouter.use(hallPackageRoutes);
 hallMealRouter.use(foodMenuItemRoutes);
 hallMealRouter.use(foodPackageRoutes);
+hallMealRouter.use(hallAvailabilityRoutes);
+hallMealRouter.use(hallBookingRoutes);
+hallMealRouter.use(hallBookingManageRoutes);
 router.use("/hall-meal", hallMealRouter);
 
 router.use("/pos", posRoutes);
