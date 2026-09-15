@@ -49,9 +49,14 @@ const posTransactionSchema = new mongoose.Schema({
   // was the original design and turned out to be a real problem: a bank/
   // terminal can refuse, or mis-reconcile, a second live payment carrying a
   // reference it already saw settle once — see confirmPosPayment's own
-  // comment. Null only for Cash (settled synchronously, never dispatched
-  // through the shared confirmation path at all).
-  referenceId: { type: String, default: null },
+  // comment. Left entirely unset for Cash (settled synchronously, never
+  // dispatched through the shared confirmation path at all) — deliberately
+  // no `default: null` here. A sparse unique index only excludes documents
+  // where the field is truly ABSENT, not ones storing an explicit `null`;
+  // a `default: null` would stamp every Cash row with `referenceId: null`,
+  // and the second such row would collide with the first on the unique
+  // index below instead of being skipped by it.
+  referenceId: { type: String },
 
   bookingId: { type: mongoose.Schema.Types.ObjectId, ref: "PosBooking", default: null },
   orderId: { type: mongoose.Schema.Types.ObjectId, ref: "PosOrder", required: true },
