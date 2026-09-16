@@ -317,12 +317,17 @@ async function lookupCustomerByMobile(req, res) {
  * staff member's own linked "self" customer, whose bookings are almost
  * always POS Portal ones and so had ZERO rows in the legacy collection this
  * used to query exclusively.
+ *
+ * Default (no `limit`) is 3 — the counter's "last 3" preview. The POS
+ * Portal's "Load more" button re-requests this with a large limit (200) to
+ * stand in for "every booking this customer has" without an unbounded query
+ * — no real customer's confirmed-booking count is expected to approach that.
  */
 async function getRecentBookings(req, res) {
   try {
     const customerId = req.params.id;
     if (!mongoose.isValidObjectId(customerId)) throw "Invalid customer ID.";
-    const limit = Math.min(10, Math.max(1, Number(req.query.limit) || 3));
+    const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 3));
 
     const [legacyBookings, posBookings] = await Promise.all([
       Booking.find(Booking.notDeletedFilter({ customer: customerId, bookingStatus: "confirmed" }))
