@@ -1,8 +1,234 @@
 const express = require("express");
+const ExcelJS = require("exceljs");
+const authGuard = require("../../common/middleware/auth-guard");
+const adminOnly = require("../../common/middleware/admin-only");
+const requirePermission = require("../../common/middleware/require-permission");
+const validateBody = require("../../common/middleware/validate");
+const { responseHandler, exceptionHandler } = require("../../utilities/handlers");
 
-// Audit trail and operational reports (Day 10 of the build sequence).
-// Mounted at /reports — see routes/index.js.
+const ReportDefinition = require("../../models/report-definitions");
+const { listReportSourcesForClient, getReportSource } = require("../../common/reports/report-sources");
+const { runReport, runReportForExport, MAX_EXPORT_ROWS } = require("../../common/reports/report-runner");
+const { runSchema, saveDefinitionSchema, updateDefinitionSchema } = require("./request-objects");
+
+const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+/**
+ * Every field key this request actually touches — selected columns, every
+ * filter condition, the Group By key, every aggregated field, every sort
+ * key — has to belong to the chosen source. Joi can only check shapes, not
+ * "is this a real field of this specific source", so that cross-check
+ * happens here, once, covering every place a field key can appear.
+ */
+function assertConfigBelongsToSource(sourceKey, { fields = [], conditions = [], grouping = null, sort = [] }) {
+  const source = getReportSource(sourceKey); // throws a plain string for an unknown sourceKey
+  const validKeys = new Set(source.fields.map((f) => f.key));
+
+  const touched = [
+    ...fields,
+    ...conditions.map((c) => c.field),
+    ...sort.map((s) => s.field),
+    ...(grouping ? [grouping.groupBy, ...grouping.aggregations.map((a) => a.field).filter(Boolean)] : []),
+  ];
+  const unknown = touched.filter((k) => !validKeys.has(k));
+  if (unknown.length > 0) {
+    throw `"${source.label}" has no field(s): ${[...new Set(unknown)].join(", ")}.`;
+  }
+  return source;
+}
+
+// Not nested under /masters or /hall-meal (see routes/index.js) — authGuard
+// and adminOnly are applied here directly, same as controllers/inventory.
+// This router is mounted at "/reports" in routes/index.js, so every route
+// below is declared RELATIVE to that (just "/sources", not "/reports/sources")
+// — same convention controllers/inventory's own routes follow. The one
+// route that predates this file's rewrite ("/health") already followed it
+// by accident; every other route here originally baked "/reports" into its
+// own path too, which — combined with the "/reports" mount prefix — made
+// every one of them only reachable at "/reports/reports/...", a real bug
+// (Express's final catch-all 404'd the correct, single-prefixed URL every
+// admin screen and this comment both expect to work).
 const router = express.Router();
+router.use(authGuard, adminOnly);
+
+// ---- GET /reports/sources — the catalog the report builder renders from ----
+router.get("/sources", requirePermission("reports", "view"), (req, res) => {
+  return responseHandler({ res, response: { sources: listReportSourcesForClient() } });
+});
+
+// ---- POST /reports/run — an ad-hoc report, not saved ----
+router.post("/run", requirePermission("reports", "view"), validateBody(runSchema), async (req, res) => {
+  try {
+    assertConfigBelongsToSource(req.body.sourceKey, req.body);
+    const result = await runReport({
+      sourceKey: req.body.sourceKey,
+      fieldKeys: req.body.fields,
+      conditions: req.body.conditions,
+      grouping: req.body.grouping,
+      sort: req.body.sort,
+      page: req.body.page,
+      pageSize: req.body.pageSize,
+    });
+    return responseHandler({ res, response: result });
+  } catch (error) {
+    return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 422 : undefined });
+  }
+});
+
+// ---- GET /reports/export — downloads the current (ad-hoc or saved) report as .xlsx ----
+// The whole run config (fields/conditions/grouping/sort) travels as one
+// JSON query param — flattening a filter tree plus a grouping object into
+// several flat query params gets unreadable fast, and this is a GET only
+// because the browser's plain-link download flow needs one.
+router.get("/export", requirePermission("reports", "view"), async (req, res) => {
+  try {
+    let config;
+    try {
+      config = JSON.parse(req.query.config || "{}");
+    } catch {
+      throw "Malformed export configuration.";
+    }
+    const { sourceKey, fields = [], conditions = [], grouping = null, sort = [] } = config;
+    if (!sourceKey) throw "sourceKey is required.";
+
+    const source = assertConfigBelongsToSource(sourceKey, { fields, conditions, grouping, sort });
+    const { rows, columns, truncated } = await runReportForExport({ sourceKey, fieldKeys: fields, conditions, grouping, sort });
+
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet(source.label.slice(0, 31)); // Excel sheet-name length cap
+    sheet.columns = columns.map((c) => ({ header: c.label, key: c.key, width: Math.max(16, c.label.length + 4) }));
+    const headerRow = sheet.getRow(1);
+    headerRow.eachCell((cell) => {
+      cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF7C1527" } };
+    });
+
+    rows.forEach((row) => {
+      const flat = {};
+      columns.forEach((c) => {
+        const value = row[c.key];
+        if (c.type === "date" && value) flat[c.key] = new Date(value).toISOString().slice(0, 10);
+        else if (c.type === "boolean") flat[c.key] = value ? "Yes" : "No";
+        else flat[c.key] = value ?? "";
+      });
+      sheet.addRow(flat);
+    });
+
+    if (truncated) {
+      const note = sheet.addRow([`Showing the first ${MAX_EXPORT_ROWS.toLocaleString()} rows — narrow the filters to export the rest.`]);
+      note.getCell(1).font = { italic: true, color: { argb: "FF7C1527" } };
+    }
+
+    res.setHeader("Content-Type", XLSX_MIME);
+    res.setHeader("Content-Disposition", `attachment; filename="${sourceKey}-report-${Date.now()}.xlsx"`);
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (error) {
+    return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 422 : undefined });
+  }
+});
+
+// ---- Saved report definitions — "My Reports" ----
+// Scoped to the caller's own createdBy throughout (list/update/remove/run)
+// — a saved report is personal, the same way a browser's own saved
+// searches are; nobody can list, edit, or run another admin's by guessing
+// its id.
+
+router.get("/definitions", requirePermission("reports", "view"), async (req, res) => {
+  try {
+    const definitions = await ReportDefinition.find(
+      ReportDefinition.notDeletedFilter({ createdBy: req.auth.userId })
+    ).sort({ createdAt: -1 });
+    return responseHandler({ res, response: { items: definitions } });
+  } catch (error) {
+    return exceptionHandler({ res, error });
+  }
+});
+
+router.post(
+  "/definitions",
+  requirePermission("reports", "fullAccess"),
+  validateBody(saveDefinitionSchema),
+  async (req, res) => {
+    try {
+      assertConfigBelongsToSource(req.body.sourceKey, req.body);
+      const doc = await ReportDefinition.create({ ...req.body, createdBy: req.auth.userId });
+      return responseHandler({ res, response: doc, successMessage: "Report saved successfully.", statusCode: 201 });
+    } catch (error) {
+      if (error?.code === 11000) {
+        return exceptionHandler({ res, error: "You already have a saved report with this name.", statusCode: 409 });
+      }
+      return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 422 : undefined });
+    }
+  }
+);
+
+router.put(
+  "/definitions/:id",
+  requirePermission("reports", "fullAccess"),
+  validateBody(updateDefinitionSchema),
+  async (req, res) => {
+    try {
+      const existing = await ReportDefinition.findOne(
+        ReportDefinition.notDeletedFilter({ _id: req.params.id, createdBy: req.auth.userId })
+      );
+      if (!existing) throw "Report not found.";
+
+      const merged = {
+        sourceKey: req.body.sourceKey ?? existing.sourceKey,
+        fields: req.body.fields ?? existing.fields,
+        conditions: req.body.conditions ?? existing.conditions,
+        grouping: req.body.grouping !== undefined ? req.body.grouping : existing.grouping,
+        sort: req.body.sort ?? existing.sort,
+      };
+      assertConfigBelongsToSource(merged.sourceKey, merged);
+
+      Object.assign(existing, req.body, { updatedBy: req.auth.userId });
+      await existing.save();
+      return responseHandler({ res, response: existing, successMessage: "Report updated successfully." });
+    } catch (error) {
+      if (error?.code === 11000) {
+        return exceptionHandler({ res, error: "You already have a saved report with this name.", statusCode: 409 });
+      }
+      return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 404 : undefined });
+    }
+  }
+);
+
+router.delete("/definitions/:id", requirePermission("reports", "fullAccess"), async (req, res) => {
+  try {
+    const existing = await ReportDefinition.findOne(
+      ReportDefinition.notDeletedFilter({ _id: req.params.id, createdBy: req.auth.userId })
+    );
+    if (!existing) throw "Report not found.";
+    await existing.softDelete(req.auth.userId);
+    return responseHandler({ res, successMessage: "Report deleted successfully." });
+  } catch (error) {
+    return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 404 : undefined });
+  }
+});
+
+router.post("/definitions/:id/run", requirePermission("reports", "view"), async (req, res) => {
+  try {
+    const definition = await ReportDefinition.findOne(
+      ReportDefinition.notDeletedFilter({ _id: req.params.id, createdBy: req.auth.userId })
+    );
+    if (!definition) throw "Report not found.";
+
+    const result = await runReport({
+      sourceKey: definition.sourceKey,
+      fieldKeys: definition.fields,
+      conditions: definition.conditions,
+      grouping: definition.grouping,
+      sort: definition.sort,
+      page: req.body?.page,
+      pageSize: req.body?.pageSize,
+    });
+    return responseHandler({ res, response: result });
+  } catch (error) {
+    return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 404 : undefined });
+  }
+});
 
 router.get("/health", (req, res) => res.json({ ok: true, service: "SSD-Backend", module: "reports" }));
 

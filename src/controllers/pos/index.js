@@ -523,19 +523,29 @@ async function decorateServices(services) {
 
 /**
  * GET /pos/booking/payment-modes
- * Returns every active, publicly-offerable payment mode — `publicAvailability`
- * is what actually gates this (see models/payment-modes and
- * seed/seedPaymentModes.js): DBS is seeded with publicAvailability: false
+ * Returns every active payment mode available at the Temple POS counter —
+ * `posAvailability` is what actually gates this (see models/payment-modes
+ * and seed/seedPaymentModes.js): DBS is seeded with posAvailability: false
  * (it's a back-office bank-transfer record, never a counter payment option)
  * and is excluded here for exactly that reason, not hardcoded by name.
- * Cash/PayNow/NETS are all publicAvailability: true; the POS counter's own
- * PaymentModeBoxes further decides which of those it can actually process
- * yet (Cash + PayNow live, NETS still "Coming soon").
+ * Cash/PayNow/NETS/Credit Card are all posAvailability: true; the POS
+ * counter's own PaymentModeBoxes further decides which of those it can
+ * actually process yet (Cash + PayNow live, NETS still "Coming soon").
+ *
+ * This used to read `publicAvailability` instead — the field meant for a
+ * customer-facing checkout, not this counter — which happened to work only
+ * because every seeded mode's publicAvailability and posAvailability agree
+ * today. `publicAvailability` stays reserved for the Customer Portal's own
+ * checkout once that's built (still a placeholder — see app/customer).
+ *
+ * Deactivating a Payment Mode (status: 0) from the master already removes
+ * it here via `notDeletedFilter`/status, same as every other master's POS
+ * visibility gate.
  */
 async function listPaymentModes(req, res) {
   try {
     const modes = await PaymentMode.find(
-      PaymentMode.notDeletedFilter({ status: 1, publicAvailability: true })
+      PaymentMode.notDeletedFilter({ status: 1, posAvailability: true })
     )
       .select("name description")
       .sort({ name: 1 });

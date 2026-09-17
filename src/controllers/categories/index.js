@@ -3,6 +3,7 @@ const requirePermission = require("../../common/middleware/require-permission");
 const validateBody = require("../../common/middleware/validate");
 const { uploadCategoryImage, hydrateMultipartBody } = require("../../common/middleware/upload");
 const makeCrudController = require("../../common/factories/crud-controller");
+const { makeImportExportController } = require("../../common/factories/import-export-controller");
 
 const Category = require("../../models/categories");
 const SubCategory = require("../../models/sub-categories");
@@ -10,6 +11,7 @@ const Item = require("../../models/items");
 const Service = require("../../models/services");
 const Event = require("../../models/events");
 const { createSchema, updateSchema } = require("./request-objects");
+const { fields: importExportFields, validateRow, sampleRows } = require("./import-export-fields");
 
 // Mounted at /masters — see routes/index.js (authGuard/adminOnly now applied
 // once for the whole /masters group there, not per master).
@@ -46,5 +48,20 @@ router.put(
   crud.update
 );
 router.delete("/categories/:id", requirePermission("categories", "fullAccess"), crud.remove);
+
+// Excel import/export — see common/factories/import-export-controller.js.
+const importExport = makeImportExportController(Category, {
+  entityLabel: "Category",
+  sheetName: "Categories",
+  fields: importExportFields,
+  validateRow,
+  sampleRows,
+  extraDefaults: { status: 1, image: null },
+});
+
+router.get("/categories/export", requirePermission("categories", "view"), importExport.exportList);
+router.get("/categories/import/template", requirePermission("categories", "view"), importExport.downloadTemplate);
+router.post("/categories/import/validate", requirePermission("categories", "fullAccess"), importExport.validateImport);
+router.post("/categories/import/commit", requirePermission("categories", "fullAccess"), importExport.commitImport);
 
 module.exports = router;

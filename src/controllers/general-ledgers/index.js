@@ -2,6 +2,7 @@ const express = require("express");
 const requirePermission = require("../../common/middleware/require-permission");
 const validateBody = require("../../common/middleware/validate");
 const makeCrudController = require("../../common/factories/crud-controller");
+const { makeImportExportController } = require("../../common/factories/import-export-controller");
 const { responseHandler, exceptionHandler } = require("../../utilities/handlers");
 
 const GeneralLedger = require("../../models/general-ledgers");
@@ -10,6 +11,7 @@ const Item = require("../../models/items");
 const Service = require("../../models/services");
 const { canonicalGstType } = require("../../utilities/constants/gst-types");
 const { createSchema, updateSchema } = require("./request-objects");
+const { fields: importExportFields, validateRow, exportRow, exportPopulate, sampleRows } = require("./import-export-fields");
 
 const POPULATE = [
   { path: "groupLevel1", select: "name code" },
@@ -97,5 +99,22 @@ router.get("/general-ledgers", requirePermission("general-ledgers", "view"), cru
 router.post("/general-ledgers", requirePermission("general-ledgers", "fullAccess"), validateBody(createSchema), create);
 router.put("/general-ledgers/:id", requirePermission("general-ledgers", "edit"), validateBody(updateSchema), update);
 router.delete("/general-ledgers/:id", requirePermission("general-ledgers", "fullAccess"), crud.remove);
+
+// Excel import/export — see common/factories/import-export-controller.js.
+const importExport = makeImportExportController(GeneralLedger, {
+  entityLabel: "General Ledger",
+  sheetName: "General Ledgers",
+  fields: importExportFields,
+  validateRow,
+  exportRow,
+  exportPopulate,
+  sampleRows,
+  extraDefaults: { status: 1 },
+});
+
+router.get("/general-ledgers/export", requirePermission("general-ledgers", "view"), importExport.exportList);
+router.get("/general-ledgers/import/template", requirePermission("general-ledgers", "view"), importExport.downloadTemplate);
+router.post("/general-ledgers/import/validate", requirePermission("general-ledgers", "fullAccess"), importExport.validateImport);
+router.post("/general-ledgers/import/commit", requirePermission("general-ledgers", "fullAccess"), importExport.commitImport);
 
 module.exports = router;

@@ -2,6 +2,7 @@ const express = require("express");
 const requirePermission = require("../../common/middleware/require-permission");
 const validateBody = require("../../common/middleware/validate");
 const makeCrudController = require("../../common/factories/crud-controller");
+const { makeImportExportController } = require("../../common/factories/import-export-controller");
 const escapeRegex = require("../../common/utils/escape-regex");
 const { responseHandler, exceptionHandler } = require("../../utilities/handlers");
 
@@ -10,6 +11,7 @@ const Deity = require("../../models/deities");
 const Item = require("../../models/items");
 const Service = require("../../models/services");
 const { createSchema, updateSchema } = require("./request-objects");
+const { fields: importExportFields, sampleRows } = require("./import-export-fields");
 
 const LINKED_FIELDS = "name tamilName code status";
 
@@ -124,5 +126,19 @@ router.put(
   crud.update
 );
 router.delete("/printing-groups/:id", requirePermission("printing-groups", "fullAccess"), crud.remove);
+
+// Excel import/export — see common/factories/import-export-controller.js.
+const importExport = makeImportExportController(PrintingGroup, {
+  entityLabel: "Printing Group",
+  sheetName: "Printing Groups",
+  fields: importExportFields,
+  sampleRows,
+  extraDefaults: { status: 1 },
+});
+
+router.get("/printing-groups/export", requirePermission("printing-groups", "view"), importExport.exportList);
+router.get("/printing-groups/import/template", requirePermission("printing-groups", "view"), importExport.downloadTemplate);
+router.post("/printing-groups/import/validate", requirePermission("printing-groups", "fullAccess"), importExport.validateImport);
+router.post("/printing-groups/import/commit", requirePermission("printing-groups", "fullAccess"), importExport.commitImport);
 
 module.exports = router;
