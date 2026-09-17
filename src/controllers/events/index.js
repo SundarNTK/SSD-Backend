@@ -3,10 +3,12 @@ const requirePermission = require("../../common/middleware/require-permission");
 const validateBody = require("../../common/middleware/validate");
 const { uploadEventImage, hydrateMultipartBody } = require("../../common/middleware/upload");
 const makeCrudController = require("../../common/factories/crud-controller");
+const { makeImportExportController } = require("../../common/factories/import-export-controller");
 const { responseHandler, exceptionHandler } = require("../../utilities/handlers");
 
 const Event = require("../../models/events");
 const { createSchema, updateSchema } = require("./request-objects");
+const { fields: importExportFields, validateRow, exportRow, exportPopulate, sampleRows } = require("./import-export-fields");
 
 const POPULATE = [
   { path: "category", select: "name color" },
@@ -101,5 +103,22 @@ router.put(
   update
 );
 router.delete("/events/:id", requirePermission("events", "fullAccess"), crud.remove);
+
+// Excel import/export — see common/factories/import-export-controller.js.
+const importExport = makeImportExportController(Event, {
+  entityLabel: "Event",
+  sheetName: "Events",
+  fields: importExportFields,
+  validateRow,
+  exportRow,
+  exportPopulate,
+  sampleRows,
+  extraDefaults: { status: 1, image: null },
+});
+
+router.get("/events/export", requirePermission("events", "view"), importExport.exportList);
+router.get("/events/import/template", requirePermission("events", "view"), importExport.downloadTemplate);
+router.post("/events/import/validate", requirePermission("events", "fullAccess"), importExport.validateImport);
+router.post("/events/import/commit", requirePermission("events", "fullAccess"), importExport.commitImport);
 
 module.exports = router;
