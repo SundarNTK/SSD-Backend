@@ -34,6 +34,12 @@
  *   print-split-setting → GET/PUT /masters/print-split-setting — singleton,
  *                      decides Deity Wise vs Print Group Wise POS ticket
  *                      printing (see models/print-split-settings)
+ *   reports          → GET  /reports/sources
+ *                      POST /reports/run, /reports/definitions/:id/run
+ *                      GET  /reports/export
+ *                      CRUD /reports/definitions (fullAccess — saving/
+ *                      deleting a report definition; view is enough to run
+ *                      an ad-hoc or already-saved report)
  *
  * Level semantics, applied consistently by every route:
  *   view       → read-only (GET)
@@ -71,6 +77,7 @@ const AVAILABLE_MODULES = [
   { key: "admin-booking", label: "Admin Booking", group: "Transactions" },
   { key: "pos-transactions", label: "POS Transactions", group: "Transactions" },
   { key: "pos-order-confirmation", label: "POS Order Confirmation", group: "Transactions" },
+  { key: "reports", label: "Custom Reports", group: "Reports" },
 ];
 
 const MODULE_KEYS = AVAILABLE_MODULES.map((m) => m.key);

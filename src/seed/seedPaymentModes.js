@@ -9,11 +9,11 @@ const PaymentMode = require("../models/payment-modes");
 // so this casing choice only affects what gets *displayed/stored*, never
 // which branch a payment takes.
 const DEFAULT_PAYMENT_MODES = [
-  { name: "CASH", description: "Cash payment at counter", publicAvailability: true },
-  { name: "PAYNOW", description: "PayNow transfer", publicAvailability: true },
-  { name: "DBS", description: "DBS bank transfer", publicAvailability: false },
-  { name: "NETS", description: "NETS payment", publicAvailability: true },
-  { name: "CREDIT CARD", description: "Credit card payment via the NETS terminal", publicAvailability: true },
+  { name: "CASH", description: "Cash payment at counter", posAvailability: true, publicAvailability: true },
+  { name: "PAYNOW", description: "PayNow transfer", posAvailability: true, publicAvailability: true },
+  { name: "DBS", description: "DBS bank transfer", posAvailability: false, publicAvailability: false },
+  { name: "NETS", description: "NETS payment", posAvailability: true, publicAvailability: true },
+  { name: "CREDIT CARD", description: "Credit card payment via the NETS terminal", posAvailability: true, publicAvailability: true },
 ];
 
 // Maps each current name to the legacy, differently-cased name an
@@ -34,7 +34,26 @@ const LEGACY_NAME_ALIASES = {
 async function ensureDefaultPaymentModes() {
   for (const def of DEFAULT_PAYMENT_MODES) {
     const existing = await PaymentMode.findOne(PaymentMode.notDeletedFilter({ name: def.name }));
-    if (existing) continue;
+    if (existing) {
+      // `posAvailability` is new — a database seeded before this field
+      // existed has no value stored for it at all (not even `undefined`
+      // read back from Mongo, the key is simply absent), and the
+      // `posAvailability: true` counter-visibility query in
+      // controllers/pos's listPaymentModes only matches documents where
+      // the field is *actually stored* as true, unlike a fresh Mongoose
+      // document where the schema default fills it in automatically.
+      // Backfilling here — once, the first time this seed runs after the
+      // field was added — is what makes DBS (which must land `false`, not
+      // whatever a generic default would pick) come out correct without
+      // depending on an admin happening to open and re-save every record.
+      if (existing.posAvailability === undefined) existing.posAvailability = def.posAvailability;
+      if (existing.publicAvailability === undefined) existing.publicAvailability = def.publicAvailability;
+      if (existing.isModified()) {
+        await existing.save();
+        console.log(`>>> Seed: payment mode "${def.name}" backfilled with posAvailability/publicAvailability`);
+      }
+      continue;
+    }
 
     const legacyName = LEGACY_NAME_ALIASES[def.name];
     const legacy = legacyName ? await PaymentMode.findOne(PaymentMode.notDeletedFilter({ name: legacyName })) : null;

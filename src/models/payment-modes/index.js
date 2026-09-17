@@ -10,6 +10,14 @@ const { auditablePlugin, activeUniqueIndexOptions } = require("../../common/plug
 const paymentModeSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
   description: { type: String, default: "" },
+  // Same Temple POS / Customer POS visibility pairing every other master
+  // with a public-facing side uses (see e.g. models/categories'
+  // posVisibility/customerPortalVisibility) — posAvailability gates the
+  // actual counter payment-mode boxes (see controllers/pos's
+  // listPaymentModes); publicAvailability is the customer-facing
+  // equivalent, not yet consumed anywhere since the Customer Portal has no
+  // built checkout yet (app/customer/page.tsx is still a placeholder).
+  posAvailability: { type: Boolean, default: true },
   publicAvailability: { type: Boolean, default: true },
 });
 
