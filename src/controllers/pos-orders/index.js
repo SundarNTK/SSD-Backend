@@ -33,6 +33,7 @@ const requirePermission = require("../../common/middleware/require-permission");
 const validateBody = require("../../common/middleware/validate");
 const { resolveGstRate } = require("../../common/utils/gst-rate");
 const { sortLineDeities } = require("../../common/utils/sort-line-deities");
+const { enrichBookingDevoteesForPrint } = require("../../common/utils/enrich-devotees-for-print");
 const { responseHandler, exceptionHandler } = require("../../utilities/handlers");
 const { nextSequence } = require("../../common/utils/sequence");
 const { withUniqueReferenceId, ORIGIN_PREFIXES } = require("../../common/utils/payment-reference");
@@ -737,12 +738,17 @@ async function computeBookingTicketGroups(bookingId) {
     select: "name tamilName printingGroup printOrder",
     populate: { path: "printingGroup", select: "name" },
   });
+  if (!booking) throw "Booking not found.";
   // Determines the order deity-wise tickets print in for a multi-deity
   // line (see models/deities' printOrder field) — sorted here, in JS, not
   // via the populate above: Mongoose can't apply a populate `sort` to a
   // path nested inside a document array like lines.deities.
   sortLineDeities(booking, "printOrder");
-  if (!booking) throw "Booking not found.";
+
+  // Print tickets in Tamil for devotee name + star — resolve nakshatra
+  // from the master and transliterate Latin devotee names. Done on the
+  // in-memory booking only; never written back.
+  await enrichBookingDevoteesForPrint(booking);
 
   const [setting, receiptTxn, entity] = await Promise.all([
     PrintSplitSetting.findOne({}),
