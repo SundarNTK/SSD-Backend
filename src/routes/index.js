@@ -31,6 +31,7 @@ const inventoryRoutes = require("../controllers/inventory");
 const paymentsRoutes = require("../controllers/payments");
 const posOrderConfirmationRoutes = require("../controllers/pos-order-confirmation");
 const reportsRoutes = require("../controllers/reports");
+const dashboardRoutes = require("../controllers/dashboard");
 const hallCategoryRoutes = require("../controllers/hall-categories");
 const hallRoutes = require("../controllers/halls");
 const hallPurposeRoutes = require("../controllers/hall-purposes");
@@ -155,5 +156,6 @@ router.use("/inventory", inventoryRoutes);
 router.use("/payments", paymentsRoutes);
 router.use("/pos-order-confirmation", posOrderConfirmationRoutes);
 router.use("/reports", reportsRoutes);
+router.use("/dashboard", dashboardRoutes);
 
 module.exports = router;
