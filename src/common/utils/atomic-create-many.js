@@ -48,7 +48,16 @@ async function atomicCreateMany(Model, docs) {
     });
     return created;
   } catch (err) {
-    if (!isTransactionsUnsupported(err)) throw err;
+    // Data errors (a failed validation, a duplicate key) are the caller's to
+    // report. Anything else — no replica set, or a transaction-engine failure
+    // such as a write conflict or a transient/aborted transaction — says
+    // nothing about the rows themselves, so retry on the compensating
+    // one-at-a-time path below rather than failing the whole import with an
+    // opaque 500.
+    if (err?.code === 11000 || err?.name === "ValidationError") throw err;
+    if (!isTransactionsUnsupported(err)) {
+      console.warn(">>> atomicCreateMany: transaction failed, retrying without one:", err?.message || err);
+    }
   } finally {
     await session.endSession();
   }
