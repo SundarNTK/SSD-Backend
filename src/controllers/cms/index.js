@@ -119,6 +119,11 @@ async function applyMenuRules(req, res, next) {
       }
     }
 
+    // The portal can only gate its own pages: it has no say over another website.
+    if (touches(body, [...LINK_FIELDS, "loginRequired"]) && merged.linkType === "External URL" && merged.loginRequired) {
+      throw "An external link can't require sign-in — the portal can't protect another website. Turn Login Required off, or point this menu at a CMS page or a portal page.";
+    }
+
     if (touches(body, PARENT_FIELDS)) {
       const hasChildren = existing ? await CmsMenu.exists(CmsMenu.notDeletedFilter({ parentMenu: existing._id })) : false;
 
