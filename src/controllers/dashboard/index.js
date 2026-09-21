@@ -50,7 +50,8 @@ function modeBucket(name) {
     .trim()
     .toLowerCase();
   if (n === "cash") return "cash";
-  if (n === "nets" || n.includes("credit card")) return "nets";
+  if (n.includes("credit card")) return "creditCard";
+  if (n === "nets") return "nets";
   if (n === "paynow") return "paynow";
   return "other";
 }
@@ -73,7 +74,7 @@ async function sumPaidByMode(Model, dateField, start, end) {
     },
   ]);
 
-  const out = { cash: 0, nets: 0, paynow: 0, other: 0, total: 0 };
+  const out = { cash: 0, nets: 0, creditCard: 0, paynow: 0, other: 0, total: 0 };
   for (const row of rows) {
     const bucket = modeBucket(row._id);
     out[bucket] += row.total;
@@ -185,8 +186,6 @@ async function overview(_req, res) {
     const { start: todayStart, end: todayEnd } = dayBounds();
     const weekDays = lastNDayStarts(7);
     const weekStart = weekDays[0];
-    const prevWeekStart = new Date(weekStart);
-    prevWeekStart.setDate(prevWeekStart.getDate() - 7);
 
     const [
       adminModesToday,
@@ -195,7 +194,6 @@ async function overview(_req, res) {
       posGst,
       onlineSales,
       dailySeries,
-      prevWeekTotalRow,
       activeCustomers,
       activeServices,
       activeItems,
@@ -223,28 +221,6 @@ async function overview(_req, res) {
         { $group: { _id: null, total: { $sum: "$grandTotal" } } },
       ]),
       dailyCollectionSeries(weekDays),
-      Promise.all([
-        Transaction.aggregate([
-          {
-            $match: {
-              isDeleted: false,
-              paymentStatus: "paid",
-              transactionDate: { $gte: prevWeekStart, $lt: weekStart },
-            },
-          },
-          { $group: { _id: null, total: { $sum: "$amount" } } },
-        ]),
-        PosTransaction.aggregate([
-          {
-            $match: {
-              isDeleted: false,
-              paymentStatus: "paid",
-              transactionDate: { $gte: prevWeekStart, $lt: weekStart },
-            },
-          },
-          { $group: { _id: null, total: { $sum: "$amount" } } },
-        ]),
-      ]).then(([a, b]) => (a[0]?.total || 0) + (b[0]?.total || 0)),
       Customer.countDocuments(Customer.notDeletedFilter({ status: 1 })),
       Service.countDocuments(Service.notDeletedFilter({ status: 1 })),
       Item.countDocuments(Item.notDeletedFilter({ status: 1 })),
@@ -307,46 +283,26 @@ async function overview(_req, res) {
 
     const cashCollection = +(adminModesToday.cash + posModesToday.cash).toFixed(2);
     const netsCollection = +(adminModesToday.nets + posModesToday.nets).toFixed(2);
+    const creditCardCollection = +(adminModesToday.creditCard + posModesToday.creditCard).toFixed(2);
+    const otherCollection = +(adminModesToday.other + posModesToday.other).toFixed(2);
     const paynowCollection = +(adminModesToday.paynow + posModesToday.paynow).toFixed(2);
     const todayPosSales = +posModesToday.total.toFixed(2);
     const todayCollections = +(adminModesToday.total + posModesToday.total).toFixed(2);
     const todayOnlineBookings = +(onlineSales[0]?.total || 0).toFixed(2);
     const totalGstCollected = +(adminGst.gst + posGst.gst).toFixed(2);
 
-    const weekTotal = dailySeries.reduce((s, d) => s + d.amount, 0);
-    let collectionTrendPct = 0;
-    if (prevWeekTotalRow > 0) {
-      collectionTrendPct = +(((weekTotal - prevWeekTotalRow) / prevWeekTotalRow) * 100).toFixed(1);
-    } else if (weekTotal > 0) {
-      collectionTrendPct = 100;
-    }
-
-    const paymentBreakdownTotal = cashCollection + netsCollection + paynowCollection;
+    // Every paid mode gets a slice (incl. "Other") so the donut total always
+    // equals Today's Collections.
+    const paymentBreakdownTotal =
+      cashCollection + netsCollection + creditCardCollection + paynowCollection + otherCollection;
+    const pct = (amount) =>
+      paymentBreakdownTotal ? +((amount / paymentBreakdownTotal) * 100).toFixed(1) : 0;
     const paymentBreakdown = [
-      {
-        mode: "Cash",
-        amount: cashCollection,
-        percent: paymentBreakdownTotal
-          ? +((cashCollection / paymentBreakdownTotal) * 100).toFixed(1)
-          : 0,
-        color: "#7c1527",
-      },
-      {
-        mode: "NETS",
-        amount: netsCollection,
-        percent: paymentBreakdownTotal
-          ? +((netsCollection / paymentBreakdownTotal) * 100).toFixed(1)
-          : 0,
-        color: "#e67e22",
-      },
-      {
-        mode: "PayNow",
-        amount: paynowCollection,
-        percent: paymentBreakdownTotal
-          ? +((paynowCollection / paymentBreakdownTotal) * 100).toFixed(1)
-          : 0,
-        color: "#6b8e23",
-      },
+      { mode: "Cash", amount: cashCollection, percent: pct(cashCollection), color: "#7c1527" },
+      { mode: "NETS", amount: netsCollection, percent: pct(netsCollection), color: "#e67e22" },
+      { mode: "Credit Card", amount: creditCardCollection, percent: pct(creditCardCollection), color: "#2f6f9f" },
+      { mode: "PayNow", amount: paynowCollection, percent: pct(paynowCollection), color: "#6b8e23" },
+      { mode: "Other", amount: otherCollection, percent: pct(otherCollection), color: "#8a7a6a" },
     ];
 
     return responseHandler({
@@ -358,6 +314,7 @@ async function overview(_req, res) {
           todayOnlineBookings,
           cashCollection,
           netsCollection,
+          creditCardCollection,
           paynowCollection,
           totalGstCollected,
           pendingCancellations,
@@ -369,7 +326,6 @@ async function overview(_req, res) {
         },
         charts: {
           dailyCollection: dailySeries,
-          collectionTrendPct,
           paymentBreakdown,
         },
         feeds: {
