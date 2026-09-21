@@ -20,6 +20,18 @@ const upload = multer({
   },
 });
 
+// Appended to every master's own field list — see makeImportExportController.
+const STATUS_VALUES = ["Active", "Inactive"];
+const STATUS_FIELD = {
+  key: "status",
+  header: "Status",
+  type: "enum",
+  values: STATUS_VALUES,
+  required: false,
+  default: "Inactive",
+  helpText: "Active or Inactive (dropdown). Blank defaults to Inactive — set it to Active for records that should be usable straight away.",
+};
+
 const cleanHeader = (header) => header.replace(/\*$/, "").trim();
 const slug = (label) => label.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
 
@@ -99,7 +111,7 @@ function makeImportExportController(
   {
     entityLabel,
     sheetName,
-    fields,
+    fields: baseFields,
     extraDefaults = {},
     sampleRows: sampleRowFactory,
     mapToDoc,
@@ -108,6 +120,10 @@ function makeImportExportController(
     validateRow,
   }
 ) {
+  // Every master gets the same trailing Status column (Active/Inactive
+  // dropdown, defaulting to Inactive) so an admin can flip records to Active
+  // in the sheet and re-upload it, instead of editing them one by one.
+  const fields = [...baseFields, STATUS_FIELD];
   const refFields = fields.filter((f) => f.type === "ref");
 
   async function buildRefLookups() {
@@ -370,7 +386,9 @@ function makeImportExportController(
       typeof mapToDoc === "function"
         ? mapToDoc(resolved)
         : Object.fromEntries(fields.map((f) => [f.key, resolved[f.key]]));
-    return { ...extraDefaults, ...base, createdBy: userId || null };
+    // `status` is a sheet column ("Active"/"Inactive") on every master, so it
+    // overrides whatever fixed status the master's extraDefaults declares.
+    return { ...extraDefaults, ...base, status: resolved.status === "Active" ? 1 : 0, createdBy: userId || null };
   }
 
   function defaultExportRow(doc) {
@@ -408,12 +426,12 @@ function makeImportExportController(
 
       const workbook = new ExcelJS.Workbook();
       const sheet = workbook.addWorksheet(sheetName);
-      sheet.columns = [...fields.map((f) => ({ header: cleanHeader(f.header), key: f.key, width: Math.max(18, f.header.length + 4) })), { header: "Status", key: "__status", width: 12 }];
+      sheet.columns = [...fields.map((f) => ({ header: cleanHeader(f.header), key: f.key, width: Math.max(18, f.header.length + 4) }))];
       sheet.getRow(1).font = { bold: true };
 
       docs.forEach((doc) => {
         const row = typeof exportRow === "function" ? exportRow(doc) : defaultExportRow(doc);
-        row.__status = doc.status === 1 ? "Active" : "Inactive";
+        row.status = doc.status === 1 ? "Active" : "Inactive";
         sheet.addRow(row);
       });
 
@@ -441,7 +459,7 @@ function makeImportExportController(
       });
 
       const samples = typeof sampleRowFactory === "function" ? sampleRowFactory(refLookups) : [];
-      samples.forEach((sample) => sheet.addRow(sample));
+      samples.forEach((sample) => sheet.addRow({ status: STATUS_FIELD.default, ...sample }));
 
       let lookupSheet = null;
       if (refFields.length) {
@@ -496,6 +514,24 @@ function makeImportExportController(
             errorStyle: "stop",
             errorTitle: "Invalid selection",
             error: `Choose Yes or No from the dropdown.`,
+          };
+        }
+      });
+
+      // Enum columns (Status, GST classification, ...) get the same inline
+      // dropdown so the admin picks instead of typing.
+      fields.filter((f) => f.type === "enum").forEach((f) => {
+        const colIndex = fields.findIndex((x) => x.key === f.key) + 1;
+        const colLetter = sheet.getColumn(colIndex).letter;
+        for (let r = 2; r <= MAX_IMPORT_ROWS + 1; r++) {
+          sheet.getCell(`${colLetter}${r}`).dataValidation = {
+            type: "list",
+            allowBlank: !f.required,
+            formulae: [`"${f.values.join(",")}"`],
+            showErrorMessage: true,
+            errorStyle: "stop",
+            errorTitle: "Invalid selection",
+            error: `Choose one of: ${f.values.join(", ")}.`,
           };
         }
       });
