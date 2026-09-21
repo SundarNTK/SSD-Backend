@@ -44,12 +44,21 @@ function isDisplayPoll(req) {
   return req.method === "GET" && DISPLAY_POLL_PATTERN.test(req.path);
 }
 
+// The Customer Portal renders on the Next.js server, so every visitor's page
+// view reaches this API from the same one or two IPs — counted per-IP, the
+// shared budget below would 429 a busy front page. These GETs are read-only,
+// cheap and cached briefly (see controllers/public-portal), so they sit
+// outside it.
+function isPublicPortalRead(req) {
+  return req.method === "GET" && req.path.startsWith("/public/cms/");
+}
+
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 300,
   standardHeaders: true,
   legacyHeaders: false,
-  skip: isDisplayPoll,
+  skip: (req) => isDisplayPoll(req) || isPublicPortalRead(req),
   handler: (req, res) =>
     exceptionHandler({
       res,
