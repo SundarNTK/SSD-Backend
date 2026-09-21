@@ -42,6 +42,8 @@ const foodPackageRoutes = require("../controllers/food-packages");
 const hallAvailabilityRoutes = require("../controllers/hall-availability");
 const hallBookingRoutes = require("../controllers/hall-bookings");
 const hallBookingManageRoutes = require("../controllers/hall-bookings/manage");
+const cmsRoutes = require("../controllers/cms");
+const publicPortalRoutes = require("../controllers/public-portal");
 
 const router = express.Router();
 
@@ -146,6 +148,16 @@ hallMealRouter.use(hallAvailabilityRoutes);
 hallMealRouter.use(hallBookingRoutes);
 hallMealRouter.use(hallBookingManageRoutes);
 router.use("/hall-meal", hallMealRouter);
+
+// CMS masters (menus + pages for the Customer Portal) — admin-side only.
+const cmsRouter = express.Router();
+cmsRouter.use(authGuard, adminOnly);
+cmsRouter.use(cmsRoutes);
+router.use("/cms", cmsRouter);
+
+// Customer Portal public read API — deliberately outside
+// every authGuard group above and below.
+router.use("/public", publicPortalRoutes);
 
 router.use("/pos", posRoutes);
 // Customer tablet display — GET is public (pairing code); POST/PUT are staff-gated

@@ -11,16 +11,19 @@ const { exceptionHandler } = require("../../utilities/handlers");
 const ALLOWED_MIME = new Set(["image/jpeg", "image/png", "image/webp"]);
 const MAX_BYTES = 100 * 1024; // 100 KB — every master's image upload shares this one cap
 
-const uploader = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: MAX_BYTES, files: 1 },
-  fileFilter: (req, file, cb) => {
-    if (!ALLOWED_MIME.has(file.mimetype)) {
-      return cb(new Error("Image must be a JPG, PNG or WebP file."));
-    }
-    return cb(null, true);
-  },
-});
+const makeUploader = (maxBytes, maxFiles = 1) =>
+  multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: maxBytes, files: maxFiles },
+    fileFilter: (req, file, cb) => {
+      if (!ALLOWED_MIME.has(file.mimetype)) {
+        return cb(new Error("Image must be a JPG, PNG or WebP file."));
+      }
+      return cb(null, true);
+    },
+  });
+
+const uploader = makeUploader(MAX_BYTES);
 
 /**
  * Uploads a buffer to Cloudinary via its streaming API — multer already has
@@ -58,13 +61,16 @@ function uploadBufferToCloudinary(buffer, folder) {
  * updated to offer removal yet) sees no change in behaviour — this only
  * activates once something actually sends it.
  */
-function makeImageUpload({ formField, targetField = formField, folder, label = "Image" }) {
+function makeImageUpload({ formField, targetField = formField, folder, label = "Image", maxBytes = MAX_BYTES }) {
+  // Most masters share the 100 KB cap above; a caller with genuinely larger art
+  // (CMS banners) passes its own — see uploadCmsImage.
+  const fileUploader = maxBytes === MAX_BYTES ? uploader : makeUploader(maxBytes);
   const existingField = `existing${targetField.charAt(0).toUpperCase()}${targetField.slice(1)}`;
 
   return function uploadImage(req, res, next) {
-    uploader.single(formField)(req, res, async (err) => {
+    fileUploader.single(formField)(req, res, async (err) => {
       if (err) {
-        const message = err.code === "LIMIT_FILE_SIZE" ? `${label} must be 100 KB or smaller.` : err.message;
+        const message = err.code === "LIMIT_FILE_SIZE" ? `${label} must be ${Math.round(maxBytes / 1024)} KB or smaller.` : err.message;
         return exceptionHandler({ res, error: message, statusCode: 422 });
       }
 
@@ -89,6 +95,73 @@ function makeImageUpload({ formField, targetField = formField, folder, label = "
     });
   };
 }
+
+/**
+ * Like makeImageUpload, but for a form that carries SEVERAL image fields at
+ * once (multer can only read a multipart body once, so two single-file
+ * middlewares can't be chained). Each spec has its own Cloudinary folder,
+ * label and size cap; every file is size-checked before any is uploaded, so a
+ * rejected form never leaves half its images on Cloudinary.
+ *
+ * Follows the same `existing<Field>` convention as makeImageUpload for keeping
+ * or clearing an image the form didn't re-upload.
+ */
+function makeMultiImageUpload(specs) {
+  const cap = Math.max(...specs.map((s) => s.maxBytes ?? MAX_BYTES));
+  // One file per image field — the single-file default would reject a form that sends two.
+  const multi = makeUploader(cap, specs.length);
+  const fieldsConfig = specs.map((s) => ({ name: s.formField, maxCount: 1 }));
+
+  return function uploadImages(req, res, next) {
+    multi.fields(fieldsConfig)(req, res, async (err) => {
+      if (err) {
+        // multer reports which field hit the cap, so the message can name it (and its own limit).
+        const spec = specs.find((sp) => sp.formField === err.field);
+        const message =
+          err.code === "LIMIT_FILE_SIZE"
+            ? `${spec?.label ?? "Image"} must be ${Math.round((spec?.maxBytes ?? cap) / 1024)} KB or smaller.`
+            : err.message;
+        return exceptionHandler({ res, error: message, statusCode: 422 });
+      }
+
+      const files = req.files || {};
+      for (const spec of specs) {
+        const file = files[spec.formField]?.[0];
+        const limit = spec.maxBytes ?? MAX_BYTES;
+        if (file && file.size > limit) {
+          return exceptionHandler({ res, error: `${spec.label} must be ${Math.round(limit / 1024)} KB or smaller.`, statusCode: 422 });
+        }
+      }
+
+      try {
+        for (const spec of specs) {
+          const target = spec.targetField || spec.formField;
+          const existingField = `existing${target.charAt(0).toUpperCase()}${target.slice(1)}`;
+          const hasExisting = req.body[existingField] !== undefined;
+          const existingValue = req.body[existingField] || null;
+          delete req.body[existingField];
+
+          const file = files[spec.formField]?.[0];
+          if (!file) {
+            if (hasExisting) req.body[target] = existingValue;
+            continue;
+          }
+          const result = await uploadBufferToCloudinary(file.buffer, spec.folder);
+          req.body[target] = result.secure_url;
+        }
+        return next();
+      } catch (error) {
+        return exceptionHandler({ res, error: "Could not upload the images. Please try again.", statusCode: 502 });
+      }
+    });
+  };
+}
+
+/** Event master: the small `image` (100 KB) plus the wide portal `sliderImage` (300 KB). */
+const uploadEventImages = makeMultiImageUpload([
+  { formField: "image", folder: "ssd-temple/events", label: "Event image", maxBytes: MAX_BYTES },
+  { formField: "sliderImage", folder: "ssd-temple/event-sliders", label: "Slider image", maxBytes: 300 * 1024 },
+]);
 
 const uploadAvatar = makeImageUpload({
   formField: "profileImage",
@@ -160,6 +233,19 @@ const uploadFoodMenuItemImage = makeImageUpload({
   formField: "image",
   folder: "ssd-temple/food-menu-items",
   label: "Food Menu Item image",
+});
+
+/**
+ * CMS banners, logos and page photos are full-width artwork, so they get a
+ * larger cap than the 100 KB used for small master thumbnails.
+ */
+const CMS_IMAGE_MAX_BYTES = 1024 * 1024;
+const uploadCmsImage = makeImageUpload({
+  formField: "image",
+  targetField: "url",
+  folder: "ssd-temple/cms",
+  label: "Image",
+  maxBytes: CMS_IMAGE_MAX_BYTES,
 });
 
 const uploadFoodPackageImage = makeImageUpload({
@@ -294,12 +380,14 @@ module.exports = {
   uploadItemImage,
   uploadServiceImage,
   uploadEventImage,
+  uploadEventImages,
   uploadHallPurposeImage,
   uploadHallCategoryImage,
   uploadAdditionalServiceImage,
   uploadHallPackageImage,
   uploadFoodMenuItemImage,
   uploadFoodPackageImage,
+  uploadCmsImage,
   uploadHallMedia,
   hydrateMultipartBody,
 };

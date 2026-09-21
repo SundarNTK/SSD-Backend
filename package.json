@@ -11,6 +11,7 @@
     "test": "jest",
     "sync:pools": "node src/seed/syncPools.js",
     "seed:payment-modes": "node src/seed/seedPaymentModes.js",
+    "seed:cms": "node src/seed/seedCms.js",
     "seed:print-split-setting": "node src/seed/seedPrintSplitSetting.js",
     "migrate": "node src/seed/migrate.js",
     "backfill:gl-group-codes": "node src/seed/backfillGlGroupCodes.js"
@@ -40,6 +41,7 @@
     "nodemailer": "^6.9.16",
     "openpgp": "^6.1.1",
     "qrcode": "^1.5.4",
+    "sanitize-html": "^2.17.7",
     "uuid": "^14.0.1",
     "zxcvbn": "^4.4.2"
   },

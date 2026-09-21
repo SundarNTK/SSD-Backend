@@ -1,7 +1,7 @@
 const express = require("express");
 const requirePermission = require("../../common/middleware/require-permission");
 const validateBody = require("../../common/middleware/validate");
-const { uploadEventImage, hydrateMultipartBody } = require("../../common/middleware/upload");
+const { uploadEventImages, hydrateMultipartBody } = require("../../common/middleware/upload");
 const makeCrudController = require("../../common/factories/crud-controller");
 const { makeImportExportController } = require("../../common/factories/import-export-controller");
 const { responseHandler, exceptionHandler } = require("../../utilities/handlers");
@@ -89,7 +89,7 @@ router.get("/events", requirePermission("events", "view"), crud.list);
 router.post(
   "/events",
   requirePermission("events", "fullAccess"),
-  uploadEventImage,
+  uploadEventImages,
   hydrateMultipartBody,
   validateBody(createSchema),
   create
@@ -97,7 +97,7 @@ router.post(
 router.put(
   "/events/:id",
   requirePermission("events", "edit"),
-  uploadEventImage,
+  uploadEventImages,
   hydrateMultipartBody,
   validateBody(updateSchema),
   update
