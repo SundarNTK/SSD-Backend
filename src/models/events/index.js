@@ -24,6 +24,9 @@ const eventSchema = new mongoose.Schema({
   tamilName: { type: String, default: "" },
   description: { type: String, default: "" },
   image: { type: String, default: null }, // full Cloudinary secure_url
+  // Wide banner artwork (<= 300 KB) for the Customer Portal's home-page slider
+  // and event cards — separate from `image`, which is a small thumbnail.
+  sliderImage: { type: String, default: null },
 
   category: { type: mongoose.Schema.Types.ObjectId, ref: "Category", required: true },
   subCategory: { type: mongoose.Schema.Types.ObjectId, ref: "SubCategory", default: null },

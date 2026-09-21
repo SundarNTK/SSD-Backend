@@ -19,6 +19,8 @@
  *   roles            → GET/POST/PUT/DELETE /roles, PUT /roles/:id/permissions, GET /modules
  *   email-templates  → CRUD /notifications/email-templates
  *                      CRUD /notifications/email-template-mappings
+ *   cms-menus        → GET /cms/meta, CRUD /cms/menus
+ *   cms-pages        → CRUD /cms/pages
  *   inventory        → GET /inventory/options, /available-stock, /low-stock, /history
  *                      POST /inventory/adjustments
  *   pos-transactions → GET /pos/booking/bookings, /pos/booking/bookings/:id
@@ -73,6 +75,8 @@ const AVAILABLE_MODULES = [
   { key: "events", label: "Event Master", group: "Masters" },
   { key: "nakshathirams", label: "Nakshathiram Master", group: "Masters" },
   { key: "payment-modes", label: "Payment Mode Master", group: "Masters" },
+  { key: "cms-menus", label: "CMS Menu Master", group: "CMS" },
+  { key: "cms-pages", label: "CMS Page Master", group: "CMS" },
   { key: "inventory", label: "Inventory", group: "Inventory" },
   { key: "admin-booking", label: "Admin Booking", group: "Transactions" },
   { key: "pos-transactions", label: "POS Transactions", group: "Transactions" },
