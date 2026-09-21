@@ -103,7 +103,8 @@ async function availableStock(req, res) {
  * GET /inventory/low-stock
  * Only Item carries a unit of measure, so — matching the reference
  * report — this is Item-only; Service has no UOM to show alongside a
- * stock level.
+ * stock level. Lists items that still have some stock but are under their
+ * threshold; items at zero are on GET /inventory/out-of-stock instead.
  */
 async function lowStock(req, res) {
   try {
@@ -113,6 +114,9 @@ async function lowStock(req, res) {
     const filter = Item.notDeletedFilter({
       isInventoryApplicable: true,
       status: 1,
+      // Strictly above zero — a zero-stock item belongs on the Out of Stock
+      // tab (see outOfStock below), so the two lists never overlap.
+      currentStock: { $gt: 0 },
       $expr: { $lt: ["$currentStock", "$threshold"] },
     });
     if (req.query.search) {
@@ -130,6 +134,44 @@ async function lowStock(req, res) {
     ]);
 
     return responseHandler({ res, response: { items, total, page, pageSize } });
+  } catch (error) {
+    return exceptionHandler({ res, error });
+  }
+}
+
+/**
+ * GET /inventory/out-of-stock
+ * Every inventory-tracked Item and Service whose stock has hit zero. Merged
+ * in application code for the same reason as availableStock above.
+ */
+async function outOfStock(req, res) {
+  try {
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const pageSize = Math.min(100, Number(req.query.pageSize) || 20);
+    const search = req.query.search ? searchRegex(req.query.search) : null;
+
+    async function load(Model, refType, applicableField, thresholdKey) {
+      const filter = Model.notDeletedFilter({ [applicableField]: true, status: 1, currentStock: { $lte: 0 } });
+      if (search) filter.$or = [{ name: search }, { code: search }];
+      const rows = await Model.find(filter).select(`name code currentStock ${thresholdKey} updatedAt`).sort({ name: 1 });
+      return rows.map((r) => ({
+        _id: r._id,
+        refType,
+        name: r.name,
+        code: r.code,
+        currentStock: r.currentStock || 0,
+        threshold: r[thresholdKey] ?? 0,
+      }));
+    }
+
+    const [items, services] = await Promise.all([
+      req.query.type === "Service" ? [] : load(Item, "Item", "isInventoryApplicable", "threshold"),
+      req.query.type === "Item" ? [] : load(Service, "Service", "isInventoryRequired", "thresholdCount"),
+    ]);
+    const merged = [...items, ...services].sort((a, b) => a.name.localeCompare(b.name));
+    const start = (page - 1) * pageSize;
+
+    return responseHandler({ res, response: { items: merged.slice(start, start + pageSize), total: merged.length, page, pageSize } });
   } catch (error) {
     return exceptionHandler({ res, error });
   }
@@ -236,6 +278,7 @@ router.use(authGuard, adminOnly);
 router.get("/options", requirePermission("inventory", "view"), options);
 router.get("/available-stock", requirePermission("inventory", "view"), availableStock);
 router.get("/low-stock", requirePermission("inventory", "view"), lowStock);
+router.get("/out-of-stock", requirePermission("inventory", "view"), outOfStock);
 router.get("/history", requirePermission("inventory", "view"), history);
 router.post("/adjustments", requirePermission("inventory", "fullAccess"), validateBody(createAdjustmentSchema), createAdjustment);
 
