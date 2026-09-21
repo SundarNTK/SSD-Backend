@@ -75,7 +75,12 @@ async function loadMenus() {
       .forEach((m) => {
         const parent = parents.get(String(m.parentMenu));
         const href = hrefFor(m);
-        if (parent && href) parent.children.push(toNode(m, href));
+        if (parent && href) {
+          const child = toNode(m, href);
+          // A sub-menu of a login-only menu is login-only too.
+          if (parent.loginRequired) child.loginRequired = true;
+          parent.children.push(child);
+        }
       });
     result[location] = [...parents.values()].filter((n) => n.href || n.children.length);
   }
