@@ -75,7 +75,8 @@ router.post("/run", requirePermission("reports", "view"), validateBody(runSchema
   }
 });
 
-// ---- GET /reports/export — downloads the current (ad-hoc or saved) report as .xlsx ----
+// ---- GET /reports/export — downloads the current (ad-hoc or saved) report as .xlsx,
+// or (?format=json) returns the same full, unpaginated row set as JSON for the Print view ----
 // The whole run config (fields/conditions/grouping/sort) travels as one
 // JSON query param — flattening a filter tree plus a grouping object into
 // several flat query params gets unreadable fast, and this is a GET only
@@ -93,6 +94,10 @@ router.get("/export", requirePermission("reports", "view"), async (req, res) => 
 
     const source = assertConfigBelongsToSource(sourceKey, { fields, conditions, grouping, sort });
     const { rows, columns, truncated } = await runReportForExport({ sourceKey, fieldKeys: fields, conditions, grouping, sort });
+
+    if (req.query.format === "json") {
+      return responseHandler({ res, response: { rows, columns, truncated } });
+    }
 
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet(source.label.slice(0, 31)); // Excel sheet-name length cap
