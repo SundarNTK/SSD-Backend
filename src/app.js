@@ -19,7 +19,10 @@ app.set("trust proxy", 1);
 const allowedOrigins = env.CORS_ORIGIN.split(",").map((origin) => origin.trim());
 
 app.use(helmet());
-app.use(cors({ origin: allowedOrigins, credentials: true }));
+// Content-Disposition isn't on the CORS default-exposed header list, so without this the
+// browser silently can't read the filename the server sends on a file download — every
+// export (masters, reports) falls back to whatever static name the frontend guessed instead.
+app.use(cors({ origin: allowedOrigins, credentials: true, exposedHeaders: ["Content-Disposition"] }));
 app.use(express.json({ limit: "1mb" }));
 app.use(morgan(env.NODE_ENV === "development" ? "dev" : "combined"));
 

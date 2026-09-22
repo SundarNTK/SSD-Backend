@@ -414,7 +414,7 @@ const REPORT_SOURCES = [
 
   {
     key: "itemSales",
-    label: "Item Sales Report",
+    label: "Item/Service Sales Report",
     description: "One row per item/service line sold — Admin Bookings and POS Bookings combined. Category needs one small lookup, included only when selected.",
     model: Booking,
     basePipeline: [
