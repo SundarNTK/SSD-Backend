@@ -13,6 +13,13 @@ const { runSchema, saveDefinitionSchema, updateDefinitionSchema } = require("./r
 
 const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
+// Same shape as common/factories/import-export-controller.js's own slug() — kept local
+// since that one isn't exported for reuse. Filenames are built from the source's *label*
+// ("Item/Service Sales Report" -> "item-service-sales-report"), not its internal `key`
+// (sourceKey stays a stable identifier for saved report definitions and must not change
+// just because the display label does).
+const slug = (label) => label.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+
 /**
  * Every field key this request actually touches — selected columns, every
  * filter condition, the Group By key, every aggregated field, every sort
@@ -100,7 +107,10 @@ router.get("/export", requirePermission("reports", "view"), async (req, res) => 
     }
 
     const workbook = new ExcelJS.Workbook();
-    const sheet = workbook.addWorksheet(source.label.slice(0, 31)); // Excel sheet-name length cap
+    // Excel sheet names ban * ? : \ / [ ] and cap out at 31 chars — a source label like
+    // "Item/Service Sales Report" crashes addWorksheet() unsanitized.
+    const sheetName = source.label.replace(/[*?:\\/[\]]/g, "-").slice(0, 31);
+    const sheet = workbook.addWorksheet(sheetName);
     sheet.columns = columns.map((c) => ({ header: c.label, key: c.key, width: Math.max(16, c.label.length + 4) }));
     const headerRow = sheet.getRow(1);
     headerRow.eachCell((cell) => {
@@ -125,7 +135,7 @@ router.get("/export", requirePermission("reports", "view"), async (req, res) => 
     }
 
     res.setHeader("Content-Type", XLSX_MIME);
-    res.setHeader("Content-Disposition", `attachment; filename="${sourceKey}-report-${Date.now()}.xlsx"`);
+    res.setHeader("Content-Disposition", `attachment; filename="${slug(source.label)}-${Date.now()}.xlsx"`);
     await workbook.xlsx.write(res);
     res.end();
   } catch (error) {
