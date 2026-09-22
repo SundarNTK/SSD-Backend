@@ -123,7 +123,9 @@ async function register(req, res) {
       familyMembers,
     });
 
-    const activationUrl = `${env.ADMIN_APP_URL}/admin/activate/${rawToken}`;
+    // This endpoint only ever creates CUSTOMER accounts (see comment above), so the
+    // activation link must send the devotee to the customer portal, never /admin.
+    const activationUrl = `${env.ADMIN_APP_URL}/customer/activate/${rawToken}`;
     await sendTemplatedEmail("ACCOUNT_ACTIVATION", entity._id, user.email, {
       name: user.name,
       activationUrl,
@@ -220,7 +222,10 @@ async function forgotPassword(req, res) {
       user.passwordResetTokenExpiresAt = addMinutes(new Date(), env.RESET_TOKEN_TTL_MINUTES);
       await user.save();
 
-      const resetUrl = `${env.ADMIN_APP_URL}/admin/reset-password/${rawToken}`;
+      // Shared by staff and devotee accounts alike — route each to their own
+      // portal's reset screen so a customer never lands on the staff admin login.
+      const resetPathPrefix = user.userType === USER_TYPES.CUSTOMER ? "/customer" : "/admin";
+      const resetUrl = `${env.ADMIN_APP_URL}${resetPathPrefix}/reset-password/${rawToken}`;
       const defaultAssignment = user.getDefaultEntityAssignment();
       await sendTemplatedEmail("PASSWORD_RESET", defaultAssignment?.entity, user.email, {
         name: user.name,
