@@ -29,6 +29,10 @@ async function createPendingUser({
   accessUpto = null,
   posAccess = false,
   hallMealAccess = false,
+  // Passed by the bulk-import commit so every User created in the same batch
+  // lands inside its one all-or-nothing transaction — omitted by every other
+  // caller, which just create()s standalone.
+  session,
 }) {
   if (await isUserEmailTaken(email)) throw "An account with this email already exists.";
   if (mobileNumber && (await isUserMobileTaken(mobileNumber))) {
@@ -37,26 +41,31 @@ async function createPendingUser({
 
   const rawToken = generateRawToken();
 
-  const user = await User.create({
-    uCode: await generateUserCode(),
-    name,
-    email: String(email).trim().toLowerCase(),
-    mobileNumber: mobileNumber || null,
-    profileImage,
-    userType,
-    entities: entityId ? [{ entity: entityId, roles: roleIds, default: true }] : [],
-    status,
-    accessUpto,
-    posAccess,
-    hallMealAccess,
-    createdBy: createdBy || null,
-    activationTokenHash: hashToken(rawToken),
-    // Null on purpose — the invitation stays valid until it's used. See
-    // find-user-by-hashed-token above, and models/users for the reasoning.
-    activationTokenExpiresAt: null,
-  });
+  const docs = await User.create(
+    [
+      {
+        uCode: await generateUserCode(),
+        name,
+        email: String(email).trim().toLowerCase(),
+        mobileNumber: mobileNumber || null,
+        profileImage,
+        userType,
+        entities: entityId ? [{ entity: entityId, roles: roleIds, default: true }] : [],
+        status,
+        accessUpto,
+        posAccess,
+        hallMealAccess,
+        createdBy: createdBy || null,
+        activationTokenHash: hashToken(rawToken),
+        // Null on purpose — the invitation stays valid until it's used. See
+        // find-user-by-hashed-token above, and models/users for the reasoning.
+        activationTokenExpiresAt: null,
+      },
+    ],
+    { session }
+  );
 
-  return { user, rawToken };
+  return { user: docs[0], rawToken };
 }
 
 module.exports = createPendingUser;

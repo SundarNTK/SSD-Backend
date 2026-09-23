@@ -374,8 +374,6 @@ const REPORT_SOURCES = [
       { key: "mobileNumber", label: "Contact No", type: "string", path: "mobileNumber" },
       { key: "email", label: "Email", type: "string", path: "email" },
       { key: "isRegistered", label: "Registered", type: "boolean", path: "isRegistered" },
-      { key: "dateOfBirth", label: "Date of Birth", type: "date", path: "dateOfBirth" },
-      { key: "gender", label: "Gender", type: "string", path: "gender", options: ["MALE", "FEMALE", "OTHER"] },
       {
         key: "familyMemberCount",
         label: "Family Member Count",
