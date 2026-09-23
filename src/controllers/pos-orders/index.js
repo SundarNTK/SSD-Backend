@@ -31,7 +31,7 @@
 const mongoose = require("mongoose");
 const requirePermission = require("../../common/middleware/require-permission");
 const validateBody = require("../../common/middleware/validate");
-const { resolveGstRate, allocateGstAcrossLines } = require("../../common/utils/gst-rate");
+const { resolveGstRate, extractGstForLines } = require("../../common/utils/gst-rate");
 const { sortLineDeities } = require("../../common/utils/sort-line-deities");
 const { enrichBookingDevoteesForPrint } = require("../../common/utils/enrich-devotees-for-print");
 const { responseHandler, exceptionHandler } = require("../../utilities/handlers");
@@ -204,10 +204,13 @@ async function createOrder(req, res) {
       const qty = effectiveQuantity(line);
 
       // unitPrice is the GST-inclusive counter price shown in the cart —
-      // GST is extracted out of it, never added on top. The actual
-      // extraction happens once per rate group, after this loop, via
-      // allocateGstAcrossLines — see its comment for why (avoids per-line
-      // rounding drift against the cart/order total).
+      // GST is extracted out of it, never added on top. Each line's own
+      // gstAmount/glAmount is its own independent rounding (see
+      // extractGstForLines, called after this loop) — the cart-level
+      // subtotal/gstAmount below come from that same call's totals, summed
+      // from the unrounded per-line figures rather than by re-summing
+      // these already-rounded ones, so they never drift from a single
+      // extraction on the whole cart.
       rawLines.push({
         refType,
         refId,
@@ -224,30 +227,25 @@ async function createOrder(req, res) {
       });
     }
 
-    const allocations = allocateGstAcrossLines(rawLines);
-    let subtotal = 0;
-    let totalGst = 0;
-    const resolvedLines = rawLines.map((l, i) => {
-      const { gstAmount, glAmount } = allocations[i];
-      subtotal += glAmount;
-      totalGst += gstAmount;
-      return {
-        refType: l.refType,
-        refId: l.refId,
-        quantity: l.quantity,
-        name: l.name,
-        code: l.code,
-        unitPrice: l.unitPrice,
-        lineTotal: l.lineGross,
-        generalLedger: l.generalLedger,
-        gstType: l.gstType,
-        gstRate: l.gstRate,
-        gstAmount,
-        glAmount,
-        deities: l.deities,
-        devotees: l.devotees,
-      };
-    });
+    const gst = extractGstForLines(rawLines);
+    const resolvedLines = rawLines.map((l, i) => ({
+      refType: l.refType,
+      refId: l.refId,
+      quantity: l.quantity,
+      name: l.name,
+      code: l.code,
+      unitPrice: l.unitPrice,
+      lineTotal: l.lineGross,
+      generalLedger: l.generalLedger,
+      gstType: l.gstType,
+      gstRate: l.gstRate,
+      gstAmount: gst.lines[i].gstAmount,
+      glAmount: gst.lines[i].glAmount,
+      deities: l.deities,
+      devotees: l.devotees,
+    }));
+    const subtotal = gst.totalGlAmount;
+    const totalGst = gst.totalGstAmount;
 
     const grandTotal = +(subtotal + totalGst).toFixed(2);
     if (paidAmount != null && paidAmount > grandTotal + 0.005) {
