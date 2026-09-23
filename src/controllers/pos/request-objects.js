@@ -1,5 +1,5 @@
 const Joi = require("joi");
-const { GENDERS } = require("../../utilities/constants/genders");
+const familyMemberSchema = require("../../utilities/constants/schemas/family-member");
 
 /**
  * Validation schemas for all POS / Admin Booking request bodies.
@@ -9,6 +9,16 @@ const { GENDERS } = require("../../utilities/constants/genders");
 const devoteeSchema = Joi.object({
   name: Joi.string().trim().min(1).max(150).required(),
   nakshatra: Joi.string().trim().allow("", null).default(""),
+});
+
+/**
+ * PATCH /customers/:id/family-members — the Customer's own profile shape
+ * (reuses the shared schema the admin Customer master validates against),
+ * not `devoteeSchema` above: that one is the per-booking, free-text devotee
+ * row; this one is what actually gets appended to `Customer.familyMembers`.
+ */
+const addFamilyMembersSchema = Joi.object({
+  familyMembers: Joi.array().items(familyMemberSchema).min(1).required(),
 });
 
 const cartLineSchema = Joi.object({
@@ -100,22 +110,13 @@ const customerSearchSchema = Joi.object({
 /**
  * POST /pos/booking/customers
  * Creates a walk-in devotee profile at the counter — mirrors Customer's own
- * required-field shape (name + email required, mobile optional) plus the
- * same optional fields the Admin Panel's Customer master captures
- * (dateOfBirth, gender), so a walk-in profile isn't a lesser record than
- * one created any other way.
+ * required-field shape (name + email required, mobile optional), so a
+ * walk-in profile isn't a lesser record than one created any other way.
  */
 const createCustomerSchema = Joi.object({
   name: Joi.string().trim().min(1).max(150).required(),
   email: Joi.string().trim().email({ tlds: false }).required(),
   mobileNumber: Joi.string().trim().allow("", null).default(null),
-  dateOfBirth: Joi.date().iso().max("now").allow(null).default(null).messages({
-    "date.max": "Date of birth can't be in the future.",
-  }),
-  gender: Joi.string()
-    .valid(...GENDERS)
-    .allow(null)
-    .default(null),
 });
 
 module.exports = {
@@ -124,6 +125,7 @@ module.exports = {
   confirmOrderSchema,
   customerSearchSchema,
   createCustomerSchema,
+  addFamilyMembersSchema,
   recheckLinesSchema,
   recordPaymentSchema,
 };

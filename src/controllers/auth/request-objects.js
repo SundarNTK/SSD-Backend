@@ -2,11 +2,12 @@ const Joi = require("joi");
 
 // Deliberately its own definition, not utilities/constants/schemas/family-member
 // (used by the customer-update request objects) — that one requires a 2-100
-// char name; this one only requires 1+. Register's validation predates the
-// shared schema and unifying them would silently tighten what a public
-// registrant is allowed to submit.
+// char name when nameEnglish is given at all; this one only requires 1+
+// when given. Register's validation predates the shared schema and unifying
+// them would silently tighten what a public registrant is allowed to submit.
+// Neither name is `.required()` — see that shared schema's own comment.
 const familyMemberSchema = Joi.object({
-  nameEnglish: Joi.string().trim().min(1).required(),
+  nameEnglish: Joi.string().trim().min(1).allow("").default(""),
   nameTamil: Joi.string().trim().allow("").default(""),
   natchathiram: Joi.string().trim().hex().length(24).allow(null, ""),
 });

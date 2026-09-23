@@ -13,9 +13,14 @@ const {
  * Customer is created alongside a registration or admin-created account,
  * `linkedUserId` connects the two; it's null for a pure walk-in.
  */
+// Not required in either direction — a family member entered in Tamil (e.g.
+// typed at the POS counter) is stored in nameTamil alone, English one in
+// nameEnglish alone. Neither gets back-filled with the other's value, so the
+// "English / Tamil" combined display (CustomersPage.tsx, PosPortalPage.tsx)
+// only ever appears once someone has deliberately filled in both.
 const familyMemberSchema = new mongoose.Schema(
   {
-    nameEnglish: { type: String, required: true, trim: true },
+    nameEnglish: { type: String, default: "", trim: true },
     nameTamil: { type: String, default: "", trim: true },
     natchathiram: { type: mongoose.Schema.Types.ObjectId, ref: "Nakshathiram", default: null },
   },
