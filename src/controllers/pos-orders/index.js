@@ -31,7 +31,7 @@
 const mongoose = require("mongoose");
 const requirePermission = require("../../common/middleware/require-permission");
 const validateBody = require("../../common/middleware/validate");
-const { resolveGstRate } = require("../../common/utils/gst-rate");
+const { resolveGstRate, allocateGstAcrossLines } = require("../../common/utils/gst-rate");
 const { sortLineDeities } = require("../../common/utils/sort-line-deities");
 const { enrichBookingDevoteesForPrint } = require("../../common/utils/enrich-devotees-for-print");
 const { responseHandler, exceptionHandler } = require("../../utilities/handlers");
@@ -168,13 +168,11 @@ async function createOrder(req, res) {
     if (!paymentMode) throw "Payment mode not found or inactive.";
 
     // ── 1. Resolve all line details (prices, names, codes) ──────────────
-    const resolvedLines = [];
-    let subtotal = 0;
-    let totalGst = 0;
+    const rawLines = [];
 
     for (const line of lines) {
       const { refType, refId, deities, devotees } = line;
-      let name, code, unitPrice, gstRate;
+      let name, code, unitPrice, gstType, generalLedgerId;
 
       if (refType === "Item") {
         const item = await Item.findOne(
@@ -186,7 +184,8 @@ async function createOrder(req, res) {
         name = item.name;
         code = item.code;
         unitPrice = item.salePrice;
-        gstRate = await resolveGstRate(item.generalLedger?.gstType);
+        gstType = item.generalLedger?.gstType ?? null;
+        generalLedgerId = item.generalLedger?._id ?? null;
       } else {
         const svc = await Service.findOne(
           Service.notDeletedFilter({ _id: refId, status: 1, isPosAvailable: true })
@@ -197,17 +196,58 @@ async function createOrder(req, res) {
         name = svc.name;
         code = svc.code;
         unitPrice = svc.salePrice ?? 0;
-        gstRate = await resolveGstRate(svc.generalLedger?.gstType);
+        gstType = svc.generalLedger?.gstType ?? null;
+        generalLedgerId = svc.generalLedger?._id ?? null;
       }
 
+      const gstRate = await resolveGstRate(gstType);
       const qty = effectiveQuantity(line);
-      const lineTotal = unitPrice * qty;
-      const lineGst = +(lineTotal * (gstRate / 100)).toFixed(2);
-      subtotal += lineTotal;
-      totalGst += lineGst;
 
-      resolvedLines.push({ refType, refId, quantity: qty, name, code, unitPrice, lineTotal, deities, devotees });
+      // unitPrice is the GST-inclusive counter price shown in the cart —
+      // GST is extracted out of it, never added on top. The actual
+      // extraction happens once per rate group, after this loop, via
+      // allocateGstAcrossLines — see its comment for why (avoids per-line
+      // rounding drift against the cart/order total).
+      rawLines.push({
+        refType,
+        refId,
+        quantity: qty,
+        name,
+        code,
+        unitPrice,
+        lineGross: unitPrice * qty,
+        generalLedger: generalLedgerId,
+        gstType,
+        gstRate,
+        deities,
+        devotees,
+      });
     }
+
+    const allocations = allocateGstAcrossLines(rawLines);
+    let subtotal = 0;
+    let totalGst = 0;
+    const resolvedLines = rawLines.map((l, i) => {
+      const { gstAmount, glAmount } = allocations[i];
+      subtotal += glAmount;
+      totalGst += gstAmount;
+      return {
+        refType: l.refType,
+        refId: l.refId,
+        quantity: l.quantity,
+        name: l.name,
+        code: l.code,
+        unitPrice: l.unitPrice,
+        lineTotal: l.lineGross,
+        generalLedger: l.generalLedger,
+        gstType: l.gstType,
+        gstRate: l.gstRate,
+        gstAmount,
+        glAmount,
+        deities: l.deities,
+        devotees: l.devotees,
+      };
+    });
 
     const grandTotal = +(subtotal + totalGst).toFixed(2);
     if (paidAmount != null && paidAmount > grandTotal + 0.005) {
@@ -235,6 +275,11 @@ async function createOrder(req, res) {
           quantity: l.quantity,
           unitPrice: l.unitPrice,
           lineTotal: l.lineTotal,
+          generalLedger: l.generalLedger,
+          gstType: l.gstType,
+          gstRate: l.gstRate,
+          gstAmount: l.gstAmount,
+          glAmount: l.glAmount,
           deities: l.deities,
           devotees: l.devotees,
         })),
