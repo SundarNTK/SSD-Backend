@@ -23,6 +23,16 @@ const posOrderLineSchema = new mongoose.Schema(
     code: { type: String, required: true },
     quantity: { type: Number, required: true, min: 1 },
     unitPrice: { type: Number, required: true, min: 0 },
+    // GST snapshot at sale time — unitPrice is the GST-inclusive counter
+    // price, so gstAmount is extracted out of lineTotal (never added on
+    // top) and glAmount is the remainder posted to generalLedger. Frozen
+    // here rather than re-derived, since generalLedger/gstType/gstRate can
+    // all change after the sale. See common/utils/gst-rate.js.
+    generalLedger: { type: mongoose.Schema.Types.ObjectId, ref: "GeneralLedger", default: null },
+    gstType: { type: String, default: "" },
+    gstRate: { type: Number, required: true, min: 0, default: 0 },
+    gstAmount: { type: Number, required: true, min: 0, default: 0 },
+    glAmount: { type: Number, required: true, min: 0, default: 0 },
     deities: {
       type: [{ type: mongoose.Schema.Types.ObjectId, ref: "Deity" }],
       default: [],
