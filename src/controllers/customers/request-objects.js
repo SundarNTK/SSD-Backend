@@ -1,5 +1,4 @@
 const Joi = require("joi");
-const { GENDERS } = require("../../models/customers");
 const familyMemberSchema = require("../../utilities/constants/schemas/family-member");
 
 /**
@@ -14,15 +13,24 @@ const adminUpdateSchema = Joi.object({
   name: Joi.string().trim().min(2).max(100),
   mobileNumber: Joi.string().trim().allow(null, ""),
   email: Joi.string().trim().email({ tlds: false }),
-  dateOfBirth: Joi.date().iso().max("now").allow(null).messages({
-    "date.max": "Date of birth can't be in the future.",
-  }),
-  gender: Joi.string()
-    .valid(...GENDERS)
-    .allow(null),
   familyMembers: Joi.array().items(familyMemberSchema),
   maxFamilyMembers: Joi.number().integer().min(1).max(20),
   status: Joi.number().valid(0, 1),
 });
 
-module.exports = { adminUpdateSchema };
+/**
+ * What staff may set when manually adding a devotee from the Customer
+ * Master. Same login-creation contract as public self-registration's
+ * `registerSchema` (name/email/mobile drive the account + activation
+ * email) — family members can be filled in on the same form since staff
+ * often already have them on hand, but `status`/`maxFamilyMembers` stay
+ * admin-update-only concerns, set afterwards through the update route.
+ */
+const adminCreateSchema = Joi.object({
+  name: Joi.string().trim().min(2).max(100).required(),
+  email: Joi.string().trim().email({ tlds: false }).required(),
+  mobileNumber: Joi.string().trim().min(6).required(),
+  familyMembers: Joi.array().items(familyMemberSchema).max(5).default([]),
+});
+
+module.exports = { adminUpdateSchema, adminCreateSchema };

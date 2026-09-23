@@ -1,5 +1,5 @@
 const Joi = require("joi");
-const { GENDERS } = require("../../models/customers");
+const { GENDERS } = require("../../utilities/constants/genders");
 
 /**
  * Validation schemas for all POS / Admin Booking request bodies.

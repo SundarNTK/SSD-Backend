@@ -1,5 +1,4 @@
 const Joi = require("joi");
-const { GENDERS } = require("../../models/customers");
 const familyMemberSchema = require("../../utilities/constants/schemas/family-member");
 
 /**
@@ -12,12 +11,6 @@ const familyMemberSchema = require("../../utilities/constants/schemas/family-mem
 const updateMyProfileSchema = Joi.object({
   name: Joi.string().trim().min(2).max(100),
   mobileNumber: Joi.string().trim().allow(null, ""),
-  dateOfBirth: Joi.date().iso().max("now").allow(null).messages({
-    "date.max": "Date of birth can't be in the future.",
-  }),
-  gender: Joi.string()
-    .valid(...GENDERS)
-    .allow(null),
   familyMembers: Joi.array().items(familyMemberSchema),
 });
 

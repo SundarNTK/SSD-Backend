@@ -28,7 +28,7 @@ async function getMyProfile(req, res) {
 async function updateMyProfile(req, res) {
   try {
     const customer = req.customer;
-    const { name, mobileNumber, dateOfBirth, gender, familyMembers } = req.body;
+    const { name, mobileNumber, familyMembers } = req.body;
 
     if (mobileNumber !== undefined && mobileNumber !== customer.mobileNumber) {
       const normalized = mobileNumber || null;
@@ -42,8 +42,6 @@ async function updateMyProfile(req, res) {
     }
 
     if (name !== undefined) customer.name = name;
-    if (dateOfBirth !== undefined) customer.dateOfBirth = dateOfBirth;
-    if (gender !== undefined) customer.gender = gender;
     // The pre-validate hook enforces maxFamilyMembers — the cap is the
     // temple's setting, so it is never read from the request body.
     if (familyMembers !== undefined) customer.familyMembers = familyMembers;

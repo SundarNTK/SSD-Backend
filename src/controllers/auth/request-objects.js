@@ -6,8 +6,9 @@ const Joi = require("joi");
 // shared schema and unifying them would silently tighten what a public
 // registrant is allowed to submit.
 const familyMemberSchema = Joi.object({
-  name: Joi.string().trim().min(1).required(),
-  nakshatra: Joi.string().trim().allow("").default(""),
+  nameEnglish: Joi.string().trim().min(1).required(),
+  nameTamil: Joi.string().trim().allow("").default(""),
+  natchathiram: Joi.string().trim().hex().length(24).allow(null, ""),
 });
 
 const loginSchema = Joi.object({
@@ -28,8 +29,8 @@ const forgotPasswordSchema = Joi.object({
 });
 
 // Mirrors the Customer Master fields (FSD §3.12) — register captures the full
-// profile, not just login credentials, since a devotee's DOB/gender/family
-// details are needed for temple service bookings from day one.
+// profile, not just login credentials, since a devotee's family details are
+// needed for temple service bookings from day one.
 // `maxFamilyMembers`/`status` are deliberately NOT accepted here — those are
 // admin-only concerns (the User Master), not something a public registrant
 // can set on themselves.
@@ -37,8 +38,6 @@ const registerSchema = Joi.object({
   name: Joi.string().trim().min(2).max(100).required(),
   email: Joi.string().trim().email({ tlds: false }).required(),
   mobileNumber: Joi.string().trim().min(6).required(),
-  dateOfBirth: Joi.date().iso().max("now").allow(null).default(null),
-  gender: Joi.string().valid("MALE", "FEMALE", "OTHER").allow(null).default(null),
   familyMembers: Joi.array().items(familyMemberSchema).max(5).default([]),
 });
 
