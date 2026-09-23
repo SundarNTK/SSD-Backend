@@ -78,4 +78,4 @@ async function atomicCreateMany(Model, docs) {
   }
 }
 
-module.exports = { atomicCreateMany };
+module.exports = { atomicCreateMany, isTransactionsUnsupported };

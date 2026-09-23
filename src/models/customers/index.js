@@ -12,19 +12,20 @@ const {
  * what they can *do*, not who they *are* for booking purposes. When a
  * Customer is created alongside a registration or admin-created account,
  * `linkedUserId` connects the two; it's null for a pure walk-in.
- *
- * `nakshatra` on family members is plain text for now — it becomes an
- * ObjectId ref once the Nakshatra Master exists (Build Sequence §13, Day 3).
  */
+// Not required in either direction — a family member entered in Tamil (e.g.
+// typed at the POS counter) is stored in nameTamil alone, English one in
+// nameEnglish alone. Neither gets back-filled with the other's value, so the
+// "English / Tamil" combined display (CustomersPage.tsx, PosPortalPage.tsx)
+// only ever appears once someone has deliberately filled in both.
 const familyMemberSchema = new mongoose.Schema(
   {
-    name: { type: String, required: true, trim: true },
-    nakshatra: { type: String, default: "" },
+    nameEnglish: { type: String, default: "", trim: true },
+    nameTamil: { type: String, default: "", trim: true },
+    natchathiram: { type: mongoose.Schema.Types.ObjectId, ref: "Nakshathiram", default: null },
   },
   { _id: false }
 );
-
-const GENDERS = ["MALE", "FEMALE", "OTHER"];
 
 const customerSchema = new mongoose.Schema({
   customerCode: { type: String, required: true }, // uniqueness enforced by the partial index below, not here
@@ -39,8 +40,6 @@ const customerSchema = new mongoose.Schema({
   // an admin couldn't book a pooja for their own family.
   mobileNumber: { type: String, default: null, trim: true },
   email: { type: String, required: true, trim: true, lowercase: true },
-  dateOfBirth: { type: Date, default: null },
-  gender: { type: String, enum: GENDERS, default: null },
 
   familyMembers: { type: [familyMemberSchema], default: [] },
   maxFamilyMembers: { type: Number, default: 5 },
@@ -69,4 +68,4 @@ customerSchema.pre("validate", function enforceFamilyMemberCap() {
   }
 });
 
-module.exports = { Customer: mongoose.model("Customer", customerSchema), GENDERS };
+module.exports = { Customer: mongoose.model("Customer", customerSchema) };

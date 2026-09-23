@@ -13,28 +13,34 @@ async function createCustomerProfile({
   name,
   mobileNumber,
   email,
-  dateOfBirth,
-  gender,
   familyMembers,
   // Every caller of this shared helper is a real registration (public
   // register, admin-created, seed data) except the POS walk-in flow, which
   // explicitly passes false — see models/customers' own comment on the field.
   isRegistered = true,
+  // Passed by the bulk-import commit so every Customer created in the same
+  // batch lands inside its one all-or-nothing transaction — omitted by every
+  // other caller, which just create()s standalone.
+  session,
 }) {
   const customerCode = await generateCustomerCode();
 
-  return Customer.create({
-    customerCode,
-    entity: entityId,
-    linkedUserId: linkedUserId || null,
-    name,
-    mobileNumber: mobileNumber || null,
-    email,
-    dateOfBirth: dateOfBirth || null,
-    gender: gender || null,
-    familyMembers: familyMembers || [],
-    isRegistered,
-  });
+  const docs = await Customer.create(
+    [
+      {
+        customerCode,
+        entity: entityId,
+        linkedUserId: linkedUserId || null,
+        name,
+        mobileNumber: mobileNumber || null,
+        email,
+        familyMembers: familyMembers || [],
+        isRegistered,
+      },
+    ],
+    { session }
+  );
+  return docs[0];
 }
 
 module.exports = createCustomerProfile;

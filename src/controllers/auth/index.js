@@ -95,7 +95,7 @@ async function login(req, res) {
 async function register(req, res) {
   let createdUser = null;
   try {
-    const { name, email, mobileNumber, dateOfBirth, gender, familyMembers } = req.body;
+    const { name, email, mobileNumber, familyMembers } = req.body;
 
     const entity = await findActiveEntityByCode(env.DEFAULT_ENTITY_CODE);
     if (!entity) throw "Registration isn't available right now — no active entity is configured.";
@@ -118,8 +118,6 @@ async function register(req, res) {
       name,
       mobileNumber,
       email,
-      dateOfBirth,
-      gender,
       familyMembers,
     });
 

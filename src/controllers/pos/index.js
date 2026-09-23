@@ -16,6 +16,7 @@
  *   GET  /customers/lookup?mobileNumber=   — exact match on an unregistered walk-in, for Create Customer auto-fill
  *   GET  /customers/self                   — find-or-create the logged-in staff member's own customer profile
  *   POST /customers                        — create a walk-in devotee profile (isRegistered: false)
+ *   PATCH /customers/:id/family-members    — append newly-typed devotees onto a customer's own profile
  *   GET  /customers/:id/recent-bookings    — last N confirmed bookings, for "repeat a past booking"
  *   GET  /items?search=&category=&subCategory=    — POS item picker
  *   GET  /services?search=&category=&subCategory= — POS service picker
@@ -88,6 +89,7 @@ const {
   confirmOrderSchema,
   customerSearchSchema,
   createCustomerSchema,
+  addFamilyMembersSchema,
   recheckLinesSchema,
   recordPaymentSchema,
 } = require("./request-objects");
@@ -187,7 +189,8 @@ async function searchCustomers(req, res) {
         $or: [{ name: regex }, { email: regex }, { mobileNumber: regex }],
       })
     )
-      .select("customerCode name email mobileNumber familyMembers")
+      .select("customerCode name email mobileNumber familyMembers maxFamilyMembers")
+      .populate({ path: "familyMembers.natchathiram", select: "name tamilName" })
       .sort({ name: 1 })
       .limit(10);
 
@@ -236,7 +239,7 @@ async function createWalkInCustomer(req, res) {
     const { error, value } = createCustomerSchema.validate(req.body);
     if (error) throw error.details[0].message;
 
-    const { name, email, mobileNumber, dateOfBirth, gender } = value;
+    const { name, email, mobileNumber } = value;
 
     const emailTaken = await Customer.exists(Customer.notDeletedFilter({ email }));
     if (emailTaken) throw "A devotee profile already uses this email.";
@@ -253,8 +256,6 @@ async function createWalkInCustomer(req, res) {
       name,
       email,
       mobileNumber: mobileNumber || null,
-      dateOfBirth: dateOfBirth || null,
-      gender: gender || null,
       // A walk-in starts unregistered — see models/customers' own comment.
       // A repeat visit on the same mobile is matched and reused (GET
       // .../customers/lookup) rather than hitting the mobile-uniqueness
@@ -269,6 +270,60 @@ async function createWalkInCustomer(req, res) {
     if (error?.code === 11000) {
       return exceptionHandler({ res, error: "Those details are already used by another profile.", statusCode: 409 });
     }
+    return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 400 : undefined });
+  }
+}
+
+/**
+ * PATCH /pos/booking/customers/:id/family-members
+ * Called as a fire-and-forget side effect when the counter types a devotee
+ * name during "Add to Cart" that isn't already one of this customer's known
+ * family members — the booking itself never depends on this succeeding, so
+ * a failure here is reported but doesn't touch the cart.
+ *
+ * Deliberately additive, not a replace: unlike the admin Customer master's
+ * `PUT /customers/:id` (which lets staff overwrite the whole list, including
+ * removals), this only ever appends. It skips anything that already matches
+ * an existing member by name (case-insensitive, English or Tamil) so
+ * re-booking a known devotee never creates a duplicate, and silently caps at
+ * `maxFamilyMembers` (dropping the overflow rather than failing the request)
+ * since the cashier has no way to resolve that conflict mid-checkout.
+ */
+async function addFamilyMembers(req, res) {
+  try {
+    const customer = await Customer.findOne(Customer.notDeletedFilter({ _id: req.params.id }));
+    if (!customer) return exceptionHandler({ res, error: "Devotee profile not found.", statusCode: 404 });
+
+    const known = new Set();
+    customer.familyMembers.forEach((m) => {
+      if (m.nameEnglish) known.add(m.nameEnglish.trim().toLowerCase());
+      if (m.nameTamil) known.add(m.nameTamil.trim().toLowerCase());
+    });
+
+    const room = Math.max(0, customer.maxFamilyMembers - customer.familyMembers.length);
+    const toAdd = [];
+    for (const m of req.body.familyMembers) {
+      if (toAdd.length >= room) break;
+      // A blank key (a Tamil-only or English-only entry) must never be added
+      // to `known` — every subsequent entry missing that same side would
+      // otherwise match on "" and be wrongly treated as a duplicate.
+      const englishKey = m.nameEnglish ? m.nameEnglish.trim().toLowerCase() : "";
+      const tamilKey = m.nameTamil ? m.nameTamil.trim().toLowerCase() : "";
+      if ((englishKey && known.has(englishKey)) || (tamilKey && known.has(tamilKey))) continue;
+      toAdd.push({ nameEnglish: m.nameEnglish || "", nameTamil: m.nameTamil || "", natchathiram: m.natchathiram || null });
+      if (englishKey) known.add(englishKey);
+      if (tamilKey) known.add(tamilKey);
+    }
+
+    if (toAdd.length > 0) {
+      customer.familyMembers.push(...toAdd);
+      customer.updatedBy = req.auth?.userId || null;
+      await customer.save();
+    }
+    await customer.populate({ path: "familyMembers.natchathiram", select: "name tamilName" });
+
+    return responseHandler({ res, response: { addedCount: toAdd.length, familyMembers: customer.familyMembers } });
+  } catch (error) {
     return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 400 : undefined });
   }
 }
@@ -289,7 +344,7 @@ async function lookupCustomerByMobile(req, res) {
 
     const customer = await Customer.findOne(
       Customer.notDeletedFilter({ mobileNumber, status: 1, isRegistered: false })
-    ).select("customerCode name email mobileNumber dateOfBirth gender");
+    ).select("customerCode name email mobileNumber");
 
     return responseHandler({ res, response: customer });
   } catch (error) {
@@ -1771,6 +1826,7 @@ function registerCatalogueRoutes(r) {
   r.get("/customers/lookup",    requirePermission("admin-booking", "view"),       lookupCustomerByMobile);
   r.get("/customers/self",      requirePermission("admin-booking", "view"),       getSelfCustomer);
   r.post("/customers",          requirePermission("admin-booking", "fullAccess"), validateBody(createCustomerSchema), createWalkInCustomer);
+  r.patch("/customers/:id/family-members", requirePermission("admin-booking", "fullAccess"), validateBody(addFamilyMembersSchema), addFamilyMembers);
   r.get("/customers/:id/recent-bookings", requirePermission("admin-booking", "view"), getRecentBookings);
   r.get("/items",               requirePermission("admin-booking", "view"),       listPosItems);
   r.get("/services",            requirePermission("admin-booking", "view"),       listPosServices);
