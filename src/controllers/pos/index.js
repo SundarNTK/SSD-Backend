@@ -54,7 +54,7 @@ const adminOnly = require("../../common/middleware/admin-only");
 const requirePermission = require("../../common/middleware/require-permission");
 const validateBody = require("../../common/middleware/validate");
 const { USER_TYPES } = require("../../utilities/constants/user-types");
-const { resolveGstRate } = require("../../common/utils/gst-rate");
+const { resolveGstRate, allocateGstAcrossLines } = require("../../common/utils/gst-rate");
 const { sortLineDeities } = require("../../common/utils/sort-line-deities");
 const { responseHandler, exceptionHandler } = require("../../utilities/handlers");
 const { nextSequence } = require("../../common/utils/sequence");
@@ -866,14 +866,12 @@ async function bookingSummary(req, res) {
     ).select("customerCode name email mobileNumber");
     if (!customer) throw "Customer not found or inactive.";
 
-    const resolvedLines = [];
-    let subtotal = 0;
-    let totalGst = 0;
+    const rawLines = [];
 
     for (const line of lines) {
-      const { refType, refId, quantity, deities, devotees } = line;
+      const { refType, refId, deities, devotees } = line;
 
-      let name, code, unitPrice, gstRate;
+      let name, code, unitPrice, gstType, generalLedgerId;
 
       if (refType === "Item") {
         const item = await Item.findOne(
@@ -886,7 +884,8 @@ async function bookingSummary(req, res) {
         name = item.name;
         code = item.code;
         unitPrice = item.salePrice;
-        gstRate = await resolveGstRate(item.generalLedger?.gstType);
+        gstType = item.generalLedger?.gstType ?? null;
+        generalLedgerId = item.generalLedger?._id ?? null;
       } else {
         const svc = await Service.findOne(
           Service.notDeletedFilter({ _id: refId, status: 1, isPosAvailable: true })
@@ -898,8 +897,11 @@ async function bookingSummary(req, res) {
         name = svc.name;
         code = svc.code;
         unitPrice = svc.salePrice ?? 0;
-        gstRate = await resolveGstRate(svc.generalLedger?.gstType);
+        gstType = svc.generalLedger?.gstType ?? null;
+        generalLedgerId = svc.generalLedger?._id ?? null;
       }
+
+      const gstRate = await resolveGstRate(gstType);
 
       // Check availability (read-only — no reservation written here)
       const avail = await getAvailability(refType, refId);
@@ -908,26 +910,22 @@ async function bookingSummary(req, res) {
       // Deity-mapped lines price (and reserve) per selected deity, not per
       // the raw `quantity` the client sent — see effectiveQuantity().
       const qty = effectiveQuantity(line);
-      const lineTotal = unitPrice * qty;
       // Master prices (Item.salePrice / Service.categoryDetails.salePrice)
-      // are GST-exclusive — this is the amount GST adds on top, per the
-      // rate configured on the item/service's General Ledger's GST type.
-      // e.g. a $100 line at 8% GST adds $8, for a $108 total.
-      const lineGst = +(lineTotal * (gstRate / 100)).toFixed(2);
-
-      subtotal += lineTotal;
-      totalGst += lineGst;
-
-      resolvedLines.push({
+      // are the GST-inclusive counter price the devotee actually pays — GST
+      // is extracted out of it once per rate group, after this loop, via
+      // allocateGstAcrossLines (avoids per-line rounding drift against the
+      // cart total). See common/utils/gst-rate.js.
+      rawLines.push({
         refType,
         refId,
         name,
         code,
         quantity: qty,
         unitPrice,
+        lineGross: unitPrice * qty,
+        generalLedger: generalLedgerId,
+        gstType,
         gstRate,
-        lineGst,
-        lineTotal,
         deities,
         devotees,
         inventory: avail.isInventoryApplicable
@@ -944,8 +942,38 @@ async function bookingSummary(req, res) {
       });
     }
 
-    // grandTotal is GST-inclusive: subtotal (GST-exclusive master prices)
-    // plus the GST just computed on top of it.
+    const allocations = allocateGstAcrossLines(rawLines);
+    let subtotal = 0;
+    let totalGst = 0;
+    const resolvedLines = rawLines.map((l, i) => {
+      const { gstAmount, glAmount } = allocations[i];
+      subtotal += glAmount;
+      totalGst += gstAmount;
+      return {
+        refType: l.refType,
+        refId: l.refId,
+        name: l.name,
+        code: l.code,
+        quantity: l.quantity,
+        unitPrice: l.unitPrice,
+        generalLedger: l.generalLedger,
+        gstType: l.gstType,
+        gstRate: l.gstRate,
+        gstAmount,
+        glAmount,
+        lineGst: gstAmount,
+        lineTotal: l.lineGross,
+        deities: l.deities,
+        devotees: l.devotees,
+        inventory: l.inventory,
+        availableForBooking: l.availableForBooking,
+        quantityExceedsStock: l.quantityExceedsStock,
+      };
+    });
+
+    // grandTotal is the sum of each line's GST-inclusive gross (unitPrice ×
+    // qty) — subtotal here is the GL/net amount (gross minus the extracted
+    // GST), so subtotal + gstAmount reconciles exactly back to grandTotal.
     const grandTotal = +(subtotal + totalGst).toFixed(2);
 
     return responseHandler({
@@ -1114,13 +1142,11 @@ async function createOrder(req, res) {
     if (!paymentMode) throw "Payment mode not found or inactive.";
 
     // ── 1. Resolve all line details (prices, names, codes) ──────────────────
-    const resolvedLines = [];
-    let subtotal = 0;
-    let totalGst = 0;
+    const rawLines = [];
 
     for (const line of lines) {
-      const { refType, refId, quantity, deities, devotees } = line;
-      let name, code, unitPrice, gstRate;
+      const { refType, refId, deities, devotees } = line;
+      let name, code, unitPrice, gstType, generalLedgerId;
 
       if (refType === "Item") {
         const item = await Item.findOne(
@@ -1132,7 +1158,8 @@ async function createOrder(req, res) {
         name = item.name;
         code = item.code;
         unitPrice = item.salePrice;
-        gstRate = await resolveGstRate(item.generalLedger?.gstType);
+        gstType = item.generalLedger?.gstType ?? null;
+        generalLedgerId = item.generalLedger?._id ?? null;
       } else {
         const svc = await Service.findOne(
           Service.notDeletedFilter({ _id: refId, status: 1, isPosAvailable: true })
@@ -1143,24 +1170,61 @@ async function createOrder(req, res) {
         name = svc.name;
         code = svc.code;
         unitPrice = svc.salePrice ?? 0;
-        gstRate = await resolveGstRate(svc.generalLedger?.gstType);
+        gstType = svc.generalLedger?.gstType ?? null;
+        generalLedgerId = svc.generalLedger?._id ?? null;
       }
+
+      const gstRate = await resolveGstRate(gstType);
 
       // Deity-mapped lines price (and later reserve/consume stock) per
       // selected deity — see effectiveQuantity(). This value becomes the
       // Order's stored line quantity, so the fix here also covers the
       // reservation and stock-out steps below without touching them.
       const qty = effectiveQuantity(line);
-      const lineTotal = unitPrice * qty;
-      // Same GST-on-top math as bookingSummary — see the comment there.
-      const lineGst = +(lineTotal * (gstRate / 100)).toFixed(2);
-      subtotal += lineTotal;
-      totalGst += lineGst;
-
-      resolvedLines.push({ refType, refId, quantity: qty, name, code, unitPrice, lineTotal, deities, devotees });
+      // Same GST-extraction math as bookingSummary — see the comment there.
+      rawLines.push({
+        refType,
+        refId,
+        quantity: qty,
+        name,
+        code,
+        unitPrice,
+        lineGross: unitPrice * qty,
+        generalLedger: generalLedgerId,
+        gstType,
+        gstRate,
+        deities,
+        devotees,
+      });
     }
 
-    // grandTotal is GST-inclusive: subtotal plus the GST computed on top.
+    const allocations = allocateGstAcrossLines(rawLines);
+    let subtotal = 0;
+    let totalGst = 0;
+    const resolvedLines = rawLines.map((l, i) => {
+      const { gstAmount, glAmount } = allocations[i];
+      subtotal += glAmount;
+      totalGst += gstAmount;
+      return {
+        refType: l.refType,
+        refId: l.refId,
+        quantity: l.quantity,
+        name: l.name,
+        code: l.code,
+        unitPrice: l.unitPrice,
+        lineTotal: l.lineGross,
+        generalLedger: l.generalLedger,
+        gstType: l.gstType,
+        gstRate: l.gstRate,
+        gstAmount,
+        glAmount,
+        deities: l.deities,
+        devotees: l.devotees,
+      };
+    });
+
+    // grandTotal is the sum of each line's GST-inclusive gross — subtotal
+    // is the GL/net amount, so subtotal + gstAmount reconciles exactly.
     const grandTotal = +(subtotal + totalGst).toFixed(2);
     // Only checkable now that the cart has actually been priced server-side
     // — the schema only knows paidAmount isn't negative.
@@ -1182,6 +1246,11 @@ async function createOrder(req, res) {
         quantity: l.quantity,
         unitPrice: l.unitPrice,
         lineTotal: l.lineTotal,
+        generalLedger: l.generalLedger,
+        gstType: l.gstType,
+        gstRate: l.gstRate,
+        gstAmount: l.gstAmount,
+        glAmount: l.glAmount,
         deities: l.deities,
         devotees: l.devotees,
       })),

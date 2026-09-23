@@ -141,15 +141,23 @@ function itemSalesBranch({ sourceLabel }) {
         _quantity: "$lines.quantity",
         _unitPrice: "$lines.unitPrice",
         _lineTotal: "$lines.lineTotal",
-        // No per-line GST is stored (see models/bookings — only the booking-
-        // level gstAmount is) — this line's proportional share of it, by
-        // its share of the booking's subtotal. An honest approximation
-        // given what's actually persisted, not a stored/audited GST split.
+        // Bookings written after the per-line GST/GL snapshot was added
+        // (see models/bookings, models/pos-bookings) carry the real
+        // lines.gstAmount straight through. Older rows never got that
+        // field written, so they fall back to the previous proportional
+        // estimate — this line's share of the booking-level gstAmount, by
+        // its share of the booking's subtotal — rather than reporting a
+        // blank GST for historical sales.
         _gstAmount: {
-          $cond: [
-            { $gt: ["$subtotal", 0] },
-            { $multiply: [{ $divide: ["$lines.lineTotal", "$subtotal"] }, "$gstAmount"] },
-            0,
+          $ifNull: [
+            "$lines.gstAmount",
+            {
+              $cond: [
+                { $gt: ["$subtotal", 0] },
+                { $multiply: [{ $divide: ["$lines.lineTotal", "$subtotal"] }, "$gstAmount"] },
+                0,
+              ],
+            },
           ],
         },
         _customerName: "$customerInfo.name",
@@ -171,6 +179,15 @@ function itemSalesBranch({ sourceLabel }) {
       },
     },
     {
+      // The real stored lines.glAmount when this row has it. Older rows
+      // never got that field written — lineTotal there is already the
+      // GST-exclusive net amount (GST is added on top of it, not extracted
+      // out — see models/bookings), so it doubles as its own GL fallback.
+      $addFields: {
+        _glAmount: { $ifNull: ["$lines.glAmount", "$lines.lineTotal"] },
+      },
+    },
+    {
       $project: {
         _refType: 1,
         _refId: 1,
@@ -180,6 +197,7 @@ function itemSalesBranch({ sourceLabel }) {
         _unitPrice: 1,
         _lineTotal: 1,
         _gstAmount: 1,
+        _glAmount: 1,
         _customerName: 1,
         _customerMobile: 1,
         _bookingNumber: 1,
@@ -270,28 +288,48 @@ function familyMemberCountStages() {
   return [{ $addFields: { _familyMemberCount: { $size: { $ifNull: ["$familyMembers", []] } } } }];
 }
 
-/** Customer Report's rollup — total bookings / total amount / last booking date, summed across all three sale collections via one indexed $lookup each (see the module comment above). */
+/**
+ * Customer Report's rollup — total bookings / total amount / total GST /
+ * total GL amount / last booking date, summed across all three sale
+ * collections via one indexed $lookup each (see the module comment above).
+ *
+ * GL Amount is derived (amount − gst) rather than read off a stored
+ * `glAmount` field, since Hall Bookings never got that field added — every
+ * booking collection already carries `gstAmount` alongside its total, and
+ * "net of the GST portion" is the same arithmetic regardless of whether
+ * that GST was extracted from an inclusive price or added on top of an
+ * exclusive one (see models/pos-bookings, models/bookings for the POS/Admin
+ * item-catalog flow's own per-line gstAmount/glAmount snapshot).
+ */
 function customerRollupStages() {
-  const branch = (from, statusMatch, amountField, dateField) => ({
+  const branch = (from, statusMatch, amountField, gstField, dateField) => ({
     $lookup: {
       from,
       let: { cid: "$_id" },
       pipeline: [
         { $match: { $expr: { $eq: ["$customer", "$$cid"] }, isDeleted: false, ...statusMatch } },
-        { $group: { _id: null, count: { $sum: 1 }, total: { $sum: `$${amountField}` }, last: { $max: `$${dateField}` } } },
+        {
+          $group: {
+            _id: null,
+            count: { $sum: 1 },
+            total: { $sum: `$${amountField}` },
+            gst: { $sum: `$${gstField}` },
+            last: { $max: `$${dateField}` },
+          },
+        },
       ],
       as: "__agg",
     },
   });
 
   return [
-    branch("hallbookings", { bookingStatus: { $ne: "cancelled" } }, "finalAmount", "eventDate"),
+    branch("hallbookings", { bookingStatus: { $ne: "cancelled" } }, "finalAmount", "gstAmount", "eventDate"),
     { $addFields: { __hallAgg: { $arrayElemAt: ["$__agg", 0] } } },
     { $project: { __agg: 0 } },
-    branch("bookings", { bookingStatus: "confirmed" }, "grandTotal", "bookedAt"),
+    branch("bookings", { bookingStatus: "confirmed" }, "grandTotal", "gstAmount", "bookedAt"),
     { $addFields: { __bookingAgg: { $arrayElemAt: ["$__agg", 0] } } },
     { $project: { __agg: 0 } },
-    branch("pos_bookings", { bookingStatus: "confirmed" }, "grandTotal", "bookedAt"),
+    branch("pos_bookings", { bookingStatus: "confirmed" }, "grandTotal", "gstAmount", "bookedAt"),
     { $addFields: { __posAgg: { $arrayElemAt: ["$__agg", 0] } } },
     { $project: { __agg: 0 } },
     {
@@ -310,11 +348,19 @@ function customerRollupStages() {
             { $ifNull: ["$__posAgg.total", 0] },
           ],
         },
+        _totalGstAmount: {
+          $add: [
+            { $ifNull: ["$__hallAgg.gst", 0] },
+            { $ifNull: ["$__bookingAgg.gst", 0] },
+            { $ifNull: ["$__posAgg.gst", 0] },
+          ],
+        },
         _lastBookingDate: {
           $max: ["$__hallAgg.last", "$__bookingAgg.last", "$__posAgg.last"],
         },
       },
     },
+    { $addFields: { _totalGlAmount: { $subtract: ["$_totalAmount", "$_totalGstAmount"] } } },
     { $project: { __hallAgg: 0, __bookingAgg: 0, __posAgg: 0 } },
   ];
 }
@@ -364,7 +410,7 @@ const REPORT_SOURCES = [
   {
     key: "customers",
     label: "Customer Report",
-    description: "One row per Customer. Total Bookings/Amount/Last Booking Date are rolled up live across Hall Bookings, Admin Bookings and POS Bookings — only computed when one of those fields is actually selected.",
+    description: "One row per Customer. Total Bookings/Amount/GST Amount/GL Amount/Last Booking Date are rolled up live across Hall Bookings, Admin Bookings and POS Bookings — only computed when one of those fields is actually selected.",
     model: Customer,
     basePipeline: [{ $match: { isDeleted: false } }],
     defaultSort: { field: "name", dir: "asc" },
@@ -396,6 +442,22 @@ const REPORT_SOURCES = [
         label: "Total Amount",
         type: "number",
         path: "_totalAmount",
+        stageKey: "customerRollup",
+        extraStages: customerRollupStages,
+      },
+      {
+        key: "totalGstAmount",
+        label: "Total GST Amount",
+        type: "number",
+        path: "_totalGstAmount",
+        stageKey: "customerRollup",
+        extraStages: customerRollupStages,
+      },
+      {
+        key: "totalGlAmount",
+        label: "Total GL Amount",
+        type: "number",
+        path: "_totalGlAmount",
         stageKey: "customerRollup",
         extraStages: customerRollupStages,
       },
@@ -445,6 +507,7 @@ const REPORT_SOURCES = [
       { key: "unitPrice", label: "Unit Price", type: "number", path: "_unitPrice" },
       { key: "saleAmount", label: "Sale Amount", type: "number", path: "_lineTotal" },
       { key: "gstAmount", label: "GST", type: "number", path: "_gstAmount" },
+      { key: "glAmount", label: "GL Amount", type: "number", path: "_glAmount" },
       {
         key: "deityNames",
         label: "Deity Mapping",

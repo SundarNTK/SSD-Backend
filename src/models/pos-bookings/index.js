@@ -19,6 +19,14 @@ const posBookingLineSchema = new mongoose.Schema(
     code: { type: String, required: true },
     quantity: { type: Number, required: true, min: 1 },
     unitPrice: { type: Number, required: true, min: 0 },
+    // Frozen GST/GL snapshot carried straight over from PosOrderLine at
+    // confirm time — see that schema's comment for why it's a snapshot
+    // rather than a re-derived value.
+    generalLedger: { type: mongoose.Schema.Types.ObjectId, ref: "GeneralLedger", default: null },
+    gstType: { type: String, default: "" },
+    gstRate: { type: Number, required: true, min: 0, default: 0 },
+    gstAmount: { type: Number, required: true, min: 0, default: 0 },
+    glAmount: { type: Number, required: true, min: 0, default: 0 },
     deities: {
       type: [{ type: mongoose.Schema.Types.ObjectId, ref: "Deity" }],
       default: [],
