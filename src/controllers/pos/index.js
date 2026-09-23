@@ -54,7 +54,7 @@ const adminOnly = require("../../common/middleware/admin-only");
 const requirePermission = require("../../common/middleware/require-permission");
 const validateBody = require("../../common/middleware/validate");
 const { USER_TYPES } = require("../../utilities/constants/user-types");
-const { resolveGstRate, allocateGstAcrossLines } = require("../../common/utils/gst-rate");
+const { resolveGstRate, extractGstForLines } = require("../../common/utils/gst-rate");
 const { sortLineDeities } = require("../../common/utils/sort-line-deities");
 const { responseHandler, exceptionHandler } = require("../../utilities/handlers");
 const { nextSequence } = require("../../common/utils/sequence");
@@ -912,9 +912,10 @@ async function bookingSummary(req, res) {
       const qty = effectiveQuantity(line);
       // Master prices (Item.salePrice / Service.categoryDetails.salePrice)
       // are the GST-inclusive counter price the devotee actually pays — GST
-      // is extracted out of it once per rate group, after this loop, via
-      // allocateGstAcrossLines (avoids per-line rounding drift against the
-      // cart total). See common/utils/gst-rate.js.
+      // is extracted out of it, independently per line, via
+      // extractGstForLines after this loop; its returned totals sum the
+      // unrounded per-line figures so the cart total never drifts from a
+      // single extraction on the whole cart. See common/utils/gst-rate.js.
       rawLines.push({
         refType,
         refId,
@@ -942,34 +943,29 @@ async function bookingSummary(req, res) {
       });
     }
 
-    const allocations = allocateGstAcrossLines(rawLines);
-    let subtotal = 0;
-    let totalGst = 0;
-    const resolvedLines = rawLines.map((l, i) => {
-      const { gstAmount, glAmount } = allocations[i];
-      subtotal += glAmount;
-      totalGst += gstAmount;
-      return {
-        refType: l.refType,
-        refId: l.refId,
-        name: l.name,
-        code: l.code,
-        quantity: l.quantity,
-        unitPrice: l.unitPrice,
-        generalLedger: l.generalLedger,
-        gstType: l.gstType,
-        gstRate: l.gstRate,
-        gstAmount,
-        glAmount,
-        lineGst: gstAmount,
-        lineTotal: l.lineGross,
-        deities: l.deities,
-        devotees: l.devotees,
-        inventory: l.inventory,
-        availableForBooking: l.availableForBooking,
-        quantityExceedsStock: l.quantityExceedsStock,
-      };
-    });
+    const gst = extractGstForLines(rawLines);
+    const resolvedLines = rawLines.map((l, i) => ({
+      refType: l.refType,
+      refId: l.refId,
+      name: l.name,
+      code: l.code,
+      quantity: l.quantity,
+      unitPrice: l.unitPrice,
+      generalLedger: l.generalLedger,
+      gstType: l.gstType,
+      gstRate: l.gstRate,
+      gstAmount: gst.lines[i].gstAmount,
+      glAmount: gst.lines[i].glAmount,
+      lineGst: gst.lines[i].gstAmount,
+      lineTotal: l.lineGross,
+      deities: l.deities,
+      devotees: l.devotees,
+      inventory: l.inventory,
+      availableForBooking: l.availableForBooking,
+      quantityExceedsStock: l.quantityExceedsStock,
+    }));
+    const subtotal = gst.totalGlAmount;
+    const totalGst = gst.totalGstAmount;
 
     // grandTotal is the sum of each line's GST-inclusive gross (unitPrice ×
     // qty) — subtotal here is the GL/net amount (gross minus the extracted
@@ -1198,30 +1194,25 @@ async function createOrder(req, res) {
       });
     }
 
-    const allocations = allocateGstAcrossLines(rawLines);
-    let subtotal = 0;
-    let totalGst = 0;
-    const resolvedLines = rawLines.map((l, i) => {
-      const { gstAmount, glAmount } = allocations[i];
-      subtotal += glAmount;
-      totalGst += gstAmount;
-      return {
-        refType: l.refType,
-        refId: l.refId,
-        quantity: l.quantity,
-        name: l.name,
-        code: l.code,
-        unitPrice: l.unitPrice,
-        lineTotal: l.lineGross,
-        generalLedger: l.generalLedger,
-        gstType: l.gstType,
-        gstRate: l.gstRate,
-        gstAmount,
-        glAmount,
-        deities: l.deities,
-        devotees: l.devotees,
-      };
-    });
+    const gst = extractGstForLines(rawLines);
+    const resolvedLines = rawLines.map((l, i) => ({
+      refType: l.refType,
+      refId: l.refId,
+      quantity: l.quantity,
+      name: l.name,
+      code: l.code,
+      unitPrice: l.unitPrice,
+      lineTotal: l.lineGross,
+      generalLedger: l.generalLedger,
+      gstType: l.gstType,
+      gstRate: l.gstRate,
+      gstAmount: gst.lines[i].gstAmount,
+      glAmount: gst.lines[i].glAmount,
+      deities: l.deities,
+      devotees: l.devotees,
+    }));
+    const subtotal = gst.totalGlAmount;
+    const totalGst = gst.totalGstAmount;
 
     // grandTotal is the sum of each line's GST-inclusive gross — subtotal
     // is the GL/net amount, so subtotal + gstAmount reconciles exactly.

@@ -32,58 +32,44 @@ async function resolveGstRate(gstType, documentDate = new Date()) {
 }
 
 /**
- * Splits GST out of a set of GST-inclusive line grosses, rate group by
- * rate group, so each group's line-level gstAmount/glAmount figures sum
- * EXACTLY to a single extraction on that group's combined gross — no
- * per-line rounding drift against the cart/order total. Lines sharing a
- * `gstRate` (typically every Standard Rated line at the current rate) are
- * one group; a 0%/missing rate line just gets gstAmount 0.
+ * Extracts GST from each line's own GST-inclusive gross, independently —
+ * every line's gstAmount/glAmount is its own natural rounding, so two
+ * lines with the same gross always show the same GST (no redistribution
+ * trick that makes identical-priced lines disagree).
  *
- * Uses the largest-remainder method: the group's rounded GST (in cents) is
- * distributed across its lines by each line's ideal proportional share,
- * floored, with the leftover cents (there are at most a few, one per
- * group) handed one each to the lines with the largest fractional
- * remainder — the standard way to divide a rounded total across several
- * line items without any of them drifting from what the group's own total
- * says it should be.
+ * The returned totalGstAmount/totalGlAmount are computed by summing the
+ * UNROUNDED per-line figures first and rounding once at the end — not by
+ * re-summing the already-rounded per-line values — so the cart/order total
+ * always matches a single extraction done on the whole cart, with no
+ * double-rounding drift. The per-line figures can still sum to a cent off
+ * from these totals; that's an ordinary rounding artifact of 2-decimal
+ * money, never a forced redistribution.
  *
  * @param {{ gstRate: number, lineGross: number }[]} lines
- * @returns {{ gstAmount: number, glAmount: number }[]} one result per input line, same order
+ * @returns {{
+ *   lines: { gstAmount: number, glAmount: number }[],
+ *   totalGstAmount: number,
+ *   totalGlAmount: number,
+ * }}
  */
-function allocateGstAcrossLines(lines) {
-  const results = new Array(lines.length);
-  const groups = new Map();
+function extractGstForLines(lines) {
+  let unroundedGstSum = 0;
+  let grossSum = 0;
 
-  lines.forEach((line, index) => {
-    if (!line.gstRate || line.gstRate <= 0) {
-      results[index] = { gstAmount: 0, glAmount: +line.lineGross.toFixed(2) };
-      return;
-    }
-    if (!groups.has(line.gstRate)) groups.set(line.gstRate, []);
-    groups.get(line.gstRate).push({ index, lineGross: line.lineGross });
+  const results = lines.map((line) => {
+    const unroundedGst = line.gstRate > 0 ? line.lineGross * (line.gstRate / (100 + line.gstRate)) : 0;
+    unroundedGstSum += unroundedGst;
+    grossSum += line.lineGross;
+
+    const gstAmount = +unroundedGst.toFixed(2);
+    const glAmount = +(line.lineGross - gstAmount).toFixed(2);
+    return { gstAmount, glAmount };
   });
 
-  for (const [rate, group] of groups) {
-    const groupGross = group.reduce((sum, g) => sum + g.lineGross, 0);
-    const groupGstCents = Math.round(+(groupGross * (rate / (100 + rate))).toFixed(2) * 100);
+  const totalGstAmount = +unroundedGstSum.toFixed(2);
+  const totalGlAmount = +(grossSum - totalGstAmount).toFixed(2);
 
-    const shares = group.map((g) => {
-      const idealCents = groupGross > 0 ? (g.lineGross / groupGross) * groupGstCents : 0;
-      const flooredCents = Math.floor(idealCents);
-      return { ...g, cents: flooredCents, remainder: idealCents - flooredCents };
-    });
-
-    const leftover = groupGstCents - shares.reduce((sum, s) => sum + s.cents, 0);
-    const byRemainder = [...shares].sort((a, b) => b.remainder - a.remainder || a.index - b.index);
-    for (let i = 0; i < leftover; i++) byRemainder[i].cents += 1;
-
-    for (const s of shares) {
-      const gstAmount = s.cents / 100;
-      results[s.index] = { gstAmount, glAmount: +(s.lineGross - gstAmount).toFixed(2) };
-    }
-  }
-
-  return results;
+  return { lines: results, totalGstAmount, totalGlAmount };
 }
 
-module.exports = { resolveGstRate, allocateGstAcrossLines };
+module.exports = { resolveGstRate, extractGstForLines };
