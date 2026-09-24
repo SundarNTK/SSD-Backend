@@ -97,6 +97,7 @@ async function list(req, res) {
     const [items, total] = await Promise.all([
       User.find(filter)
         .populate("entities.roles", "name")
+        .populate("familyMembers.natchathiram", "name tamilName")
         .sort(sort)
         .skip(skip)
         .limit(pageSize),
@@ -121,7 +122,7 @@ async function list(req, res) {
 async function create(req, res) {
   let createdUser = null;
   try {
-    const { name, email, mobileNumber, roleIds, accessUpto, status, profileImage, posAccess } = req.body;
+    const { name, email, mobileNumber, roleIds, accessUpto, status, profileImage, posAccess, familyMembers } = req.body;
 
     await resolveAssignableRoles(req, roleIds);
 
@@ -140,6 +141,7 @@ async function create(req, res) {
       status: status === undefined ? 1 : status,
       accessUpto: accessUpto || null,
       posAccess: posAccess === undefined ? false : posAccess,
+      familyMembers: familyMembers || [],
     });
     createdUser = user;
 
@@ -175,7 +177,7 @@ async function update(req, res) {
     const user = await User.findOne(User.notDeletedFilter({ _id: req.params.id }));
     if (!user) return exceptionHandler({ res, error: "User not found.", statusCode: 404 });
 
-    const { name, email, mobileNumber, roleIds, accessUpto, status, profileImage, posAccess } = req.body;
+    const { name, email, mobileNumber, roleIds, accessUpto, status, profileImage, posAccess, familyMembers } = req.body;
     const isSelf = String(user._id) === String(req.auth?.userId);
 
     // A System Admin account is only ever editable by another System Admin —
@@ -224,9 +226,11 @@ async function update(req, res) {
     if (accessUpto !== undefined) user.accessUpto = accessUpto;
     if (status !== undefined) user.status = status;
     if (posAccess !== undefined) user.posAccess = posAccess;
+    if (familyMembers !== undefined) user.familyMembers = familyMembers;
 
     user.updatedBy = req.auth?.userId || null;
     await user.save();
+    await user.populate("familyMembers.natchathiram", "name tamilName");
 
     return responseHandler({ res, response: user.toSessionUser(), successMessage: "User updated successfully." });
   } catch (error) {
