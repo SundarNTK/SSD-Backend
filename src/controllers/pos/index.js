@@ -458,8 +458,8 @@ async function listPosItems(req, res) {
         // Sorted by admin-assigned display order (ties alphabetical) so the
         // POS cart's Deities multi-select shows them in the configured
         // order, not insertion order — see models/deities' displayOrder.
-        .populate({ path: "deityMapping", select: "name", options: { sort: { displayOrder: 1, name: 1 } } })
-        .select("name tamilName code salePrice isInventoryApplicable currentStock threshold isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers minQuantity maxQuantity categoryDetails image")
+        .populate({ path: "deityMapping", select: "name color", options: { sort: { displayOrder: 1, name: 1 } } })
+        .select("name tamilName code salePrice isInventoryApplicable currentStock threshold isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers minQuantity maxQuantity categoryDetails image color")
         .sort({ name: 1 })
         .skip((page - 1) * pageSize)
         .limit(pageSize),
@@ -512,8 +512,8 @@ async function listPosServices(req, res) {
         // Sorted by admin-assigned display order (ties alphabetical) so the
         // POS cart's Deities multi-select shows them in the configured
         // order, not insertion order — see models/deities' displayOrder.
-        .populate({ path: "deityMapping", select: "name", options: { sort: { displayOrder: 1, name: 1 } } })
-        .select("name tamilName code salePrice categoryDetails isInventoryRequired currentStock thresholdCount isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers sessionRequired image")
+        .populate({ path: "deityMapping", select: "name color", options: { sort: { displayOrder: 1, name: 1 } } })
+        .select("name tamilName code salePrice categoryDetails isInventoryRequired currentStock thresholdCount isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers sessionRequired image color")
         .sort({ name: 1 })
         .skip((page - 1) * pageSize)
         .limit(pageSize),
@@ -546,6 +546,7 @@ async function decorateItems(items) {
     tamilName: item.tamilName,
     salePrice: item.salePrice,
     image: item.image || null,
+    color: item.color || "",
     isDeityMappingRequired: item.isDeityMappingRequired,
     deityMapping: item.deityMapping,
     isFamilyMembersRequired: item.isFamilyMembersRequired,
@@ -566,6 +567,7 @@ async function decorateServices(services) {
     tamilName: svc.tamilName,
     defaultSalePrice: svc.salePrice ?? 0,
     image: svc.image || null,
+    color: svc.color || "",
     categoryDetails: svc.categoryDetails,
     isDeityMappingRequired: svc.isDeityMappingRequired,
     deityMapping: svc.deityMapping,
@@ -760,9 +762,9 @@ async function getCatalogue(req, res) {
               // Sorted by admin-assigned display order (ties alphabetical) so the
         // POS cart's Deities multi-select shows them in the configured
         // order, not insertion order — see models/deities' displayOrder.
-        .populate({ path: "deityMapping", select: "name", options: { sort: { displayOrder: 1, name: 1 } } })
+        .populate({ path: "deityMapping", select: "name color", options: { sort: { displayOrder: 1, name: 1 } } })
               .select(
-                "name tamilName code salePrice isInventoryApplicable currentStock threshold isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers minQuantity maxQuantity categoryDetails image"
+                "name tamilName code salePrice isInventoryApplicable currentStock threshold isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers minQuantity maxQuantity categoryDetails image color"
               )
           )
         : [],
@@ -772,9 +774,9 @@ async function getCatalogue(req, res) {
               // Sorted by admin-assigned display order (ties alphabetical) so the
         // POS cart's Deities multi-select shows them in the configured
         // order, not insertion order — see models/deities' displayOrder.
-        .populate({ path: "deityMapping", select: "name", options: { sort: { displayOrder: 1, name: 1 } } })
+        .populate({ path: "deityMapping", select: "name color", options: { sort: { displayOrder: 1, name: 1 } } })
               .select(
-                "name tamilName code salePrice categoryDetails isInventoryRequired currentStock thresholdCount isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers sessionRequired image"
+                "name tamilName code salePrice categoryDetails isInventoryRequired currentStock thresholdCount isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers sessionRequired image color"
               )
           )
         : [],
@@ -1025,7 +1027,7 @@ async function recheckLines(req, res) {
         if (refType === "Item") {
           const item = await Item.findOne(Item.notDeletedFilter({ _id: refId, status: 1, posAvailability: true })).populate({
             path: "deityMapping",
-            select: "name tamilName",
+            select: "name tamilName color",
             options: { sort: { displayOrder: 1, name: 1 } },
           });
           if (!item || !offeringInPosHierarchy(item, hierarchy.categoryIds, hierarchy.subCategoryIds)) {
@@ -1036,6 +1038,8 @@ async function recheckLines(req, res) {
           unitPrice = item.salePrice;
           offeringMeta = {
             tamilName: item.tamilName,
+            image: item.image || null,
+            color: item.color || "",
             isDeityMappingRequired: item.isDeityMappingRequired,
             deityMapping: item.deityMapping,
             isFamilyMembersRequired: item.isFamilyMembersRequired,
@@ -1044,7 +1048,7 @@ async function recheckLines(req, res) {
         } else {
           const svc = await Service.findOne(Service.notDeletedFilter({ _id: refId, status: 1, isPosAvailable: true })).populate({
             path: "deityMapping",
-            select: "name tamilName",
+            select: "name tamilName color",
             options: { sort: { displayOrder: 1, name: 1 } },
           });
           if (!svc || !offeringInPosHierarchy(svc, hierarchy.categoryIds, hierarchy.subCategoryIds)) {
@@ -1055,6 +1059,8 @@ async function recheckLines(req, res) {
           unitPrice = svc.salePrice ?? 0;
           offeringMeta = {
             tamilName: svc.tamilName,
+            image: svc.image || null,
+            color: svc.color || "",
             isDeityMappingRequired: svc.isDeityMappingRequired,
             deityMapping: svc.deityMapping,
             isFamilyMembersRequired: svc.isFamilyMembersRequired,

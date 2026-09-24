@@ -1,6 +1,7 @@
 const Joi = require("joi");
 
 const objectId = Joi.string().hex().length(24);
+const HEX_COLOR = /^#[0-9A-Fa-f]{6}$/;
 
 // subCategory is optional — a row can map a service to a Category alone,
 // with no specific SubCategory (see models/services categoryDetailSchema).
@@ -60,6 +61,7 @@ const createSchema = Joi.object({
   tamilName: Joi.string().allow("").default(""),
   description: Joi.string().allow("").default(""),
   image: Joi.string().allow("", null).default(null),
+  color: Joi.string().trim().pattern(HEX_COLOR).allow("").default(""),
 
   isDeityMappingRequired: Joi.boolean().default(false),
   deityMapping: deityMappingField,
@@ -91,6 +93,7 @@ const updateSchema = Joi.object({
   tamilName: Joi.string().allow(""),
   description: Joi.string().allow(""),
   image: Joi.string().allow("", null),
+  color: Joi.string().trim().pattern(HEX_COLOR).allow(""),
 
   isDeityMappingRequired: Joi.boolean(),
   deityMapping: deityMappingFieldForUpdate,

@@ -1,6 +1,7 @@
 const Joi = require("joi");
 
 const objectId = Joi.string().hex().length(24);
+const HEX_COLOR = /^#[0-9A-Fa-f]{6}$/;
 
 // Sourced from the Unit master (see models/units) as its unitCode — e.g.
 // "UN001" — not a fixed enum. Kept a plain string (not an objectId ref) to
@@ -71,6 +72,7 @@ const createSchema = Joi.object({
   salePrice: Joi.number().min(0).required(),
   description: Joi.string().allow("").default(""),
   image: Joi.string().allow("", null).default(null),
+  color: Joi.string().trim().pattern(HEX_COLOR).allow("").default(""),
 
   isDeityMappingRequired: Joi.boolean().default(false),
   deityMapping: deityMappingField,
@@ -102,6 +104,7 @@ const updateSchema = Joi.object({
   salePrice: Joi.number().min(0),
   description: Joi.string().allow(""),
   image: Joi.string().allow("", null),
+  color: Joi.string().trim().pattern(HEX_COLOR).allow(""),
 
   isDeityMappingRequired: Joi.boolean(),
   deityMapping: deityMappingFieldForUpdate,

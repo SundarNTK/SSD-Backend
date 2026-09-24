@@ -28,6 +28,8 @@ const itemSchema = new mongoose.Schema({
   salePrice: { type: Number, required: true, min: 0 },
   description: { type: String, default: "" },
   image: { type: String, default: null }, // full Cloudinary secure_url
+  // Optional hex card colour ("" = use the POS default theme).
+  color: { type: String, default: "" },
 
   isDeityMappingRequired: { type: Boolean, default: false },
   deityMapping: { type: [{ type: mongoose.Schema.Types.ObjectId, ref: "Deity" }], default: [] },
