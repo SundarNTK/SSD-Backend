@@ -1,4 +1,5 @@
 const Joi = require("joi");
+const familyMemberSchema = require("../../utilities/constants/schemas/family-member");
 
 const objectId = Joi.string().hex().length(24);
 
@@ -38,6 +39,25 @@ const posAccessField = Joi.alternatives().try(Joi.boolean(), Joi.string().valid(
   value === "true" ? true : value === "false" ? false : value
 );
 
+// Not required — an admin user's own family/Natchathiram details, purely
+// optional the same way they are on the Customer Master. Arrives as a JSON
+// string whenever the form is submitted as multipart (a profile image
+// attached), same reasoning as roleIdsField.
+const familyMembersField = Joi.alternatives()
+  .try(
+    Joi.array().items(familyMemberSchema),
+    Joi.string().custom((value, helpers) => {
+      try {
+        const parsed = JSON.parse(value);
+        if (!Array.isArray(parsed)) return helpers.error("any.invalid");
+        return parsed;
+      } catch {
+        return helpers.error("any.invalid");
+      }
+    })
+  )
+  .messages({ "any.invalid": "Family members must be a list." });
+
 const createSchema = Joi.object({
   name: Joi.string().trim().min(2).max(100).required(),
   email: Joi.string().trim().email({ tlds: false }).required(),
@@ -47,6 +67,7 @@ const createSchema = Joi.object({
   status: Joi.number().valid(0, 1).default(1),
   profileImage: Joi.string().allow(null, "").default(null),
   posAccess: posAccessField.default(false),
+  familyMembers: familyMembersField.default([]),
 });
 
 const updateSchema = Joi.object({
@@ -58,6 +79,7 @@ const updateSchema = Joi.object({
   status: Joi.number().valid(0, 1),
   profileImage: Joi.string().allow(null, ""),
   posAccess: posAccessField,
+  familyMembers: familyMembersField,
 });
 
 module.exports = { createSchema, updateSchema };

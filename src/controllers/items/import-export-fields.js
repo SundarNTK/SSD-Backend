@@ -56,6 +56,7 @@ const fields = [
   { key: "maxFamilyMembers", header: "Max Family Members", type: "number", integer: true, min: 1, default: 2, helpText: "Leave blank for 2." },
   { key: "posAvailability", header: "POS Availability", type: "boolean", default: true, helpText: "Yes/No — available at the POS counter. Defaults to Yes." },
   { key: "customerPortalAvailability", header: "Customer Portal Availability", type: "boolean", default: true, helpText: "Yes/No — available on the customer portal. Defaults to Yes." },
+  { key: "favorite", header: "Favorite", type: "boolean", default: false, helpText: "Yes/No — shown under the POS Portal's Favorites tab. Defaults to No." },
 ];
 
 /** Flattens the imported Category/Sub Category pair and Deity-Mapping conditional fields into Item's actual nested schema shape. */
@@ -81,6 +82,7 @@ function mapToDoc(resolved) {
     maxFamilyMembers: resolved.maxFamilyMembers,
     posAvailability: resolved.posAvailability,
     customerPortalAvailability: resolved.customerPortalAvailability,
+    favorite: resolved.favorite,
   };
 }
 
@@ -109,6 +111,7 @@ function exportRow(doc) {
     maxFamilyMembers: doc.maxFamilyMembers,
     posAvailability: doc.posAvailability ? "Yes" : "No",
     customerPortalAvailability: doc.customerPortalAvailability ? "Yes" : "No",
+    favorite: doc.favorite ? "Yes" : "No",
   };
 }
 
@@ -150,6 +153,7 @@ function sampleRows(refLookups) {
       maxFamilyMembers: 2,
       posAvailability: "Yes",
       customerPortalAvailability: "Yes",
+      favorite: "Yes",
     },
     {
       code: "ITM02",
@@ -173,6 +177,7 @@ function sampleRows(refLookups) {
       maxFamilyMembers: 2,
       posAvailability: "Yes",
       customerPortalAvailability: "Yes",
+      favorite: "No",
     },
   ];
 }

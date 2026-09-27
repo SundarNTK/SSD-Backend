@@ -24,6 +24,21 @@ const entityAssignmentSchema = new mongoose.Schema(
   { _id: false }
 );
 
+// Same shape as Customer's family member sub-schema — an admin user is a
+// devotee too (see ensureCustomerProfileForUser), and staff sometimes want
+// their own family's Natchathiram on hand without switching to the Customer
+// Master. Purely informational here: nothing on the User master reads or
+// enforces these fields the way booking flows do on Customer, and none of
+// them are required.
+const familyMemberSchema = new mongoose.Schema(
+  {
+    nameEnglish: { type: String, default: "", trim: true },
+    nameTamil: { type: String, default: "", trim: true },
+    natchathiram: { type: mongoose.Schema.Types.ObjectId, ref: "Nakshathiram", default: null },
+  },
+  { _id: false }
+);
+
 const userSchema = new mongoose.Schema({
   // Human-readable account number, "SSD-U1" style — sequence-generated, and
   // distinct from `uid` (random, unguessable, from auditablePlugin).
@@ -38,6 +53,8 @@ const userSchema = new mongoose.Schema({
 
   userType: { type: String, enum: USER_TYPE_VALUES, required: true },
   entities: { type: [entityAssignmentSchema], default: [] },
+
+  familyMembers: { type: [familyMemberSchema], default: [] },
 
   accessUpto: { type: Date, default: null },
 

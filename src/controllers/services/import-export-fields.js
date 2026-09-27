@@ -47,6 +47,7 @@ const fields = [
   { key: "thresholdCount", header: "Threshold Count", type: "number", integer: true, min: 0, default: 0, helpText: "Low-stock threshold. Leave blank for 0." },
   { key: "isPosAvailable", header: "POS Availability", type: "boolean", default: true, helpText: "Yes/No — available at the POS counter. Defaults to Yes." },
   { key: "publicAvailability", header: "Public Availability", type: "boolean", default: true, helpText: "Yes/No — available on the customer portal. Defaults to Yes." },
+  { key: "favorite", header: "Favorite", type: "boolean", default: false, helpText: "Yes/No — shown under the POS Portal's Favorites tab. Defaults to No." },
 ];
 
 function mapToDoc(resolved) {
@@ -68,6 +69,7 @@ function mapToDoc(resolved) {
     thresholdCount: resolved.thresholdCount,
     isPosAvailable: resolved.isPosAvailable,
     publicAvailability: resolved.publicAvailability,
+    favorite: resolved.favorite,
   };
 }
 
@@ -92,6 +94,7 @@ function exportRow(doc) {
     thresholdCount: doc.thresholdCount,
     isPosAvailable: doc.isPosAvailable ? "Yes" : "No",
     publicAvailability: doc.publicAvailability ? "Yes" : "No",
+    favorite: doc.favorite ? "Yes" : "No",
   };
 }
 
@@ -129,6 +132,7 @@ function sampleRows(refLookups) {
       thresholdCount: 0,
       isPosAvailable: "Yes",
       publicAvailability: "Yes",
+      favorite: "Yes",
     },
     {
       code: "SVC02",
@@ -149,6 +153,7 @@ function sampleRows(refLookups) {
       thresholdCount: 0,
       isPosAvailable: "Yes",
       publicAvailability: "Yes",
+      favorite: "No",
     },
   ];
 }

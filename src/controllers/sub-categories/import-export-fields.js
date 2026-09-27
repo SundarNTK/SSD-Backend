@@ -11,6 +11,7 @@ const fields = [
   { key: "description", header: "Description", type: "string", required: false, helpText: "Optional description." },
   { key: "posVisibility", header: "POS Visibility", type: "boolean", default: true, helpText: "Yes/No — visible at the POS counter. Defaults to Yes." },
   { key: "customerPortalVisibility", header: "Customer Portal Visibility", type: "boolean", default: true, helpText: "Yes/No — visible on the customer portal. Defaults to Yes." },
+  { key: "favorite", header: "Favorite", type: "boolean", default: false, helpText: "Yes/No — shown under the POS Portal's Favorites tab. Defaults to No." },
 ];
 
 const HEX_COLOR = /^#[0-9A-Fa-f]{6}$/;
@@ -24,7 +25,7 @@ function validateRow(resolved, errors) {
 function sampleRows(refLookups) {
   const categoryName = (i) => refLookups.category?.docs?.[i]?.name ?? refLookups.category?.docs?.[0]?.name ?? "Your Category Name";
   return [
-    { name: "Flowers", tamilName: "பூக்கள்", code: "FLOWER", category: categoryName(0), displayOrder: 1, color: "#942237", description: "", posVisibility: "Yes", customerPortalVisibility: "Yes" },
+    { name: "Flowers", tamilName: "பூக்கள்", code: "FLOWER", category: categoryName(0), displayOrder: 1, color: "#942237", description: "", posVisibility: "Yes", customerPortalVisibility: "Yes", favorite: "No" },
   ];
 }
 
