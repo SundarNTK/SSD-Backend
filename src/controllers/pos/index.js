@@ -18,8 +18,10 @@
  *   POST /customers                        — create a walk-in devotee profile (isRegistered: false)
  *   PATCH /customers/:id/family-members    — append newly-typed devotees onto a customer's own profile
  *   GET  /customers/:id/recent-bookings    — last N confirmed bookings, for "repeat a past booking"
- *   GET  /items?search=&category=&subCategory=    — POS item picker
- *   GET  /services?search=&category=&subCategory= — POS service picker
+ *   GET  /items?search=&category=&subCategory=&favorite=    — POS item picker
+ *   GET  /services?search=&category=&subCategory=&favorite= — POS service picker
+ *        (favorite=true powers the POS Portal's static "Favorites" tab —
+ *        a flat, cross-category pick list, same shape as a search result)
  *   GET  /catalogue                        — category tabs + sub-category folders
  *   GET  /deities                          — active deity roster
  *   GET  /nakshathirams                    — active nakshathiram roster
@@ -448,6 +450,12 @@ async function listPosItems(req, res) {
       }
       filter["categoryDetails.subCategory"] = req.query.subCategory;
     }
+    // Powers the POS Portal's static "Favorites" tab — a flat, cross-
+    // category pick list of every favourite-flagged item, same shape as the
+    // search results view (see favorite=true on listPosServices too).
+    if (req.query.favorite === "true") {
+      filter.favorite = true;
+    }
     filter.$and = and;
 
     const [items, total] = await Promise.all([
@@ -459,7 +467,7 @@ async function listPosItems(req, res) {
         // POS cart's Deities multi-select shows them in the configured
         // order, not insertion order — see models/deities' displayOrder.
         .populate({ path: "deityMapping", select: "name color", options: { sort: { displayOrder: 1, name: 1 } } })
-        .select("name tamilName code salePrice isInventoryApplicable currentStock threshold isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers minQuantity maxQuantity categoryDetails image color")
+        .select("name tamilName code salePrice isInventoryApplicable currentStock threshold isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers minQuantity maxQuantity categoryDetails image color favorite")
         .sort({ name: 1 })
         .skip((page - 1) * pageSize)
         .limit(pageSize),
@@ -503,6 +511,11 @@ async function listPosServices(req, res) {
       }
       filter["categoryDetails.subCategory"] = req.query.subCategory;
     }
+    // Powers the POS Portal's static "Favorites" tab — see the matching
+    // comment on listPosItems above.
+    if (req.query.favorite === "true") {
+      filter.favorite = true;
+    }
     filter.$and = and;
 
     const [services, total] = await Promise.all([
@@ -513,7 +526,7 @@ async function listPosServices(req, res) {
         // POS cart's Deities multi-select shows them in the configured
         // order, not insertion order — see models/deities' displayOrder.
         .populate({ path: "deityMapping", select: "name color", options: { sort: { displayOrder: 1, name: 1 } } })
-        .select("name tamilName code salePrice categoryDetails isInventoryRequired currentStock thresholdCount isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers sessionRequired image color")
+        .select("name tamilName code salePrice categoryDetails isInventoryRequired currentStock thresholdCount isDeityMappingRequired deityMapping isFamilyMembersRequired maxFamilyMembers sessionRequired image color favorite")
         .sort({ name: 1 })
         .skip((page - 1) * pageSize)
         .limit(pageSize),
@@ -554,6 +567,7 @@ async function decorateItems(items) {
     minQuantity: item.minQuantity,
     maxQuantity: item.maxQuantity,
     categoryDetails: item.categoryDetails,
+    favorite: Boolean(item.favorite),
     inventory: availByRefId.get(String(item._id)),
   }));
 }
@@ -574,6 +588,7 @@ async function decorateServices(services) {
     isFamilyMembersRequired: svc.isFamilyMembersRequired,
     maxFamilyMembers: svc.maxFamilyMembers,
     sessionRequired: svc.sessionRequired,
+    favorite: Boolean(svc.favorite),
     inventory: availByRefId.get(String(svc._id)),
   }));
 }

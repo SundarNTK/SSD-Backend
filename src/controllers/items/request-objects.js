@@ -92,6 +92,7 @@ const createSchema = Joi.object({
   maxFamilyMembers: Joi.number().integer().min(1).default(2),
   posAvailability: Joi.boolean().default(true),
   customerPortalAvailability: Joi.boolean().default(true),
+  favorite: Joi.boolean().default(false),
 
   status: Joi.number().valid(0, 1).default(1),
 });
@@ -124,6 +125,7 @@ const updateSchema = Joi.object({
   maxFamilyMembers: Joi.number().integer().min(1),
   posAvailability: Joi.boolean(),
   customerPortalAvailability: Joi.boolean(),
+  favorite: Joi.boolean(),
 
   status: Joi.number().valid(0, 1),
 });

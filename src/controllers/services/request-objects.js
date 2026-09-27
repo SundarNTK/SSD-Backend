@@ -83,6 +83,7 @@ const createSchema = Joi.object({
   bookingCutoffDate: Joi.date().allow(null).default(null),
   isPosAvailable: Joi.boolean().default(true),
   publicAvailability: Joi.boolean().default(true),
+  favorite: Joi.boolean().default(false),
 
   status: Joi.number().valid(0, 1).default(1),
 });
@@ -115,6 +116,7 @@ const updateSchema = Joi.object({
   bookingCutoffDate: Joi.date().allow(null),
   isPosAvailable: Joi.boolean(),
   publicAvailability: Joi.boolean(),
+  favorite: Joi.boolean(),
 
   status: Joi.number().valid(0, 1),
 });

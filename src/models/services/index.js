@@ -58,6 +58,9 @@ const serviceSchema = new mongoose.Schema({
   bookingCutoffDate: { type: Date, default: null },
   isPosAvailable: { type: Boolean, default: true },
   publicAvailability: { type: Boolean, default: true },
+  // Marks this service as a quick-access favourite — surfaced by the POS
+  // Portal's static "Favorites" tab, ahead of "All Categories".
+  favorite: { type: Boolean, default: false },
 });
 
 serviceSchema.plugin(auditablePlugin);
@@ -68,6 +71,8 @@ serviceSchema.index({ status: 1, createdAt: -1 });
 // getCatalogue's actual filter (status + isPosAvailable) and sort (name) in
 // one index instead of an in-memory sort on every request.
 serviceSchema.index({ status: 1, isPosAvailable: 1, name: 1 });
+// Backs the POS Portal's Favorites tab (GET /pos/booking/services?favorite=true).
+serviceSchema.index({ status: 1, isPosAvailable: 1, favorite: 1, name: 1 });
 
 // Every ref field indexed, including inside the categoryDetails array and the
 // deityMapping array — Mongoose supports indexing a dotted/array path into
