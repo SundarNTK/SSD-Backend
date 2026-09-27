@@ -15,6 +15,9 @@ const subCategorySchema = new mongoose.Schema({
   image: { type: String, default: null }, // full Cloudinary secure_url
   posVisibility: { type: Boolean, default: true },
   customerPortalVisibility: { type: Boolean, default: true },
+  // Marks this sub-category as a quick-access favourite — surfaced by the
+  // POS Portal's static "Favorites" tab alongside favourite Items/Services.
+  favorite: { type: Boolean, default: false },
 });
 
 subCategorySchema.plugin(auditablePlugin);
@@ -22,5 +25,6 @@ subCategorySchema.plugin(auditablePlugin);
 subCategorySchema.index({ code: 1 }, activeUniqueIndexOptions({ collation: { locale: "en", strength: 2 } }));
 subCategorySchema.index({ status: 1, displayOrder: 1 });
 subCategorySchema.index({ category: 1, status: 1 });
+subCategorySchema.index({ status: 1, favorite: 1 });
 
 module.exports = mongoose.model("SubCategory", subCategorySchema);

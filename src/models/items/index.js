@@ -28,6 +28,8 @@ const itemSchema = new mongoose.Schema({
   salePrice: { type: Number, required: true, min: 0 },
   description: { type: String, default: "" },
   image: { type: String, default: null }, // full Cloudinary secure_url
+  // Optional hex card colour ("" = use the POS default theme).
+  color: { type: String, default: "" },
 
   isDeityMappingRequired: { type: Boolean, default: false },
   deityMapping: { type: [{ type: mongoose.Schema.Types.ObjectId, ref: "Deity" }], default: [] },
@@ -53,6 +55,9 @@ const itemSchema = new mongoose.Schema({
   maxFamilyMembers: { type: Number, default: 2 },
   posAvailability: { type: Boolean, default: true },
   customerPortalAvailability: { type: Boolean, default: true },
+  // Marks this item as a quick-access favourite — surfaced by the POS
+  // Portal's static "Favorites" tab, ahead of "All Categories".
+  favorite: { type: Boolean, default: false },
 });
 
 itemSchema.plugin(auditablePlugin);
@@ -67,6 +72,10 @@ itemSchema.index({ status: 1, createdAt: -1 });
 // but a real cost once the database is a network hop away (Atlas) instead
 // of on the same machine as the backend.
 itemSchema.index({ status: 1, posAvailability: 1, name: 1 });
+// Backs the POS Portal's Favorites tab (GET /pos/booking/items?favorite=true) —
+// same filter + sort shape as the index above, with favorite as the extra
+// equality filter.
+itemSchema.index({ status: 1, posAvailability: 1, favorite: 1, name: 1 });
 
 // Every ref field indexed, including inside the categoryDetails array —
 // Mongoose supports indexing a dotted path into an array of subdocuments,

@@ -29,6 +29,7 @@ async function createPendingUser({
   accessUpto = null,
   posAccess = false,
   hallMealAccess = false,
+  familyMembers = [],
   // Passed by the bulk-import commit so every User created in the same batch
   // lands inside its one all-or-nothing transaction — omitted by every other
   // caller, which just create()s standalone.
@@ -55,6 +56,7 @@ async function createPendingUser({
         accessUpto,
         posAccess,
         hallMealAccess,
+        familyMembers,
         createdBy: createdBy || null,
         activationTokenHash: hashToken(rawToken),
         // Null on purpose — the invitation stays valid until it's used. See

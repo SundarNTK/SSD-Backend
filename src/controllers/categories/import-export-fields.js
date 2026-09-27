@@ -8,6 +8,7 @@ const fields = [
   { key: "description", header: "Description", type: "string", required: false, helpText: "Optional description." },
   { key: "posVisibility", header: "POS Visibility", type: "boolean", default: true, helpText: "Yes/No — visible at the POS counter. Defaults to Yes." },
   { key: "customerPortalVisibility", header: "Customer Portal Visibility", type: "boolean", default: true, helpText: "Yes/No — visible on the customer portal. Defaults to Yes." },
+  { key: "favorite", header: "Favorite", type: "boolean", default: false, helpText: "Yes/No — shown under the POS Portal's Favorites tab. Defaults to No." },
 ];
 
 const HEX_COLOR = /^#[0-9A-Fa-f]{6}$/;
@@ -20,8 +21,8 @@ function validateRow(resolved, errors) {
 
 function sampleRows() {
   return [
-    { name: "Pooja Items", tamilName: "பூஜை பொருட்கள்", code: "POOJA", displayOrder: 1, color: "#942237", description: "Everyday archana/pooja supplies", posVisibility: "Yes", customerPortalVisibility: "Yes" },
-    { name: "Festival Specials", tamilName: "", code: "FEST", displayOrder: 2, color: "#7c1527", description: "", posVisibility: "Yes", customerPortalVisibility: "No" },
+    { name: "Pooja Items", tamilName: "பூஜை பொருட்கள்", code: "POOJA", displayOrder: 1, color: "#942237", description: "Everyday archana/pooja supplies", posVisibility: "Yes", customerPortalVisibility: "Yes", favorite: "Yes" },
+    { name: "Festival Specials", tamilName: "", code: "FEST", displayOrder: 2, color: "#7c1527", description: "", posVisibility: "Yes", customerPortalVisibility: "No", favorite: "No" },
   ];
 }
 
