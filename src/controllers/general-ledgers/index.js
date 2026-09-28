@@ -9,6 +9,7 @@ const GeneralLedger = require("../../models/general-ledgers");
 const GlGroup = require("../../models/gl-groups");
 const Item = require("../../models/items");
 const Service = require("../../models/services");
+const GeneralItem = require("../../models/general-items");
 const { canonicalGstType } = require("../../utilities/constants/gst-types");
 const { createSchema, updateSchema } = require("./request-objects");
 const { fields: importExportFields, validateRow, exportRow, exportPopulate, sampleRows } = require("./import-export-fields");
@@ -92,6 +93,7 @@ const crud = makeCrudController(GeneralLedger, {
   referencedBy: [
     { model: Item, field: "generalLedger", label: "Item" },
     { model: Service, field: "generalLedger", label: "Service" },
+    { model: GeneralItem, field: "generalLedger", label: "General Item" },
   ],
 });
 

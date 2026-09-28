@@ -1,12 +1,18 @@
 const Category = require("../../models/categories");
 const SubCategory = require("../../models/sub-categories");
 
-/** Missing posVisibility is treated as visible so existing masters stay on POS. */
+/** Missing posVisibility/adminBookingVisibility is treated as visible so existing masters stay visible. */
 const POS_VISIBLE = { $ne: false };
 
-async function loadPosVisibleHierarchy() {
+/**
+ * Loads the Category/SubCategory hierarchy visible under a given boolean
+ * flag — "posVisibility" for the POS Portal counter, "adminBookingVisibility"
+ * for the Admin Booking Panel. Both trees are otherwise identical, so this is
+ * the one place either visibility gate is defined.
+ */
+async function loadVisibleHierarchy(field) {
   const categories = await Category.find(
-    Category.notDeletedFilter({ status: 1, posVisibility: POS_VISIBLE })
+    Category.notDeletedFilter({ status: 1, [field]: POS_VISIBLE })
   )
     .select("name color image")
     .sort({ displayOrder: 1, name: 1 });
@@ -14,11 +20,24 @@ async function loadPosVisibleHierarchy() {
   const subCategories = await SubCategory.find(
     SubCategory.notDeletedFilter({
       status: 1,
-      posVisibility: POS_VISIBLE,
+      [field]: POS_VISIBLE,
       category: { $in: categoryIds },
     })
   ).select("name tamilName color image category");
   return { categories, subCategories, categoryIds, subCategoryIds: subCategories.map((s) => s._id) };
+}
+
+function loadPosVisibleHierarchy() {
+  return loadVisibleHierarchy("posVisibility");
+}
+
+function loadAdminBookingVisibleHierarchy() {
+  return loadVisibleHierarchy("adminBookingVisibility");
+}
+
+/** Picks the right hierarchy loader for the tree a request came in on. */
+function loadHierarchyForPortal(posPortal) {
+  return posPortal === "admin" ? loadAdminBookingVisibleHierarchy() : loadPosVisibleHierarchy();
 }
 
 function posHierarchyClause(categoryIds, subCategoryIds) {
@@ -53,6 +72,8 @@ function offeringInPosHierarchy(doc, categoryIds, subCategoryIds) {
 module.exports = {
   POS_VISIBLE,
   loadPosVisibleHierarchy,
+  loadAdminBookingVisibleHierarchy,
+  loadHierarchyForPortal,
   posHierarchyClause,
   offeringInPosHierarchy,
 };

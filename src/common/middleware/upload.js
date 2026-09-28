@@ -199,6 +199,12 @@ const uploadServiceImage = makeImageUpload({
   label: "Service image",
 });
 
+const uploadGeneralItemImage = makeImageUpload({
+  formField: "image",
+  folder: "ssd-temple/general-items",
+  label: "General Item image",
+});
+
 const uploadEventImage = makeImageUpload({
   formField: "image",
   folder: "ssd-temple/events",
@@ -379,6 +385,7 @@ module.exports = {
   uploadSubCategoryImage,
   uploadItemImage,
   uploadServiceImage,
+  uploadGeneralItemImage,
   uploadEventImage,
   uploadEventImages,
   uploadHallPurposeImage,

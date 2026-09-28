@@ -15,6 +15,10 @@ const subCategorySchema = new mongoose.Schema({
   image: { type: String, default: null }, // full Cloudinary secure_url
   posVisibility: { type: Boolean, default: true },
   customerPortalVisibility: { type: Boolean, default: true },
+  // Independent of posVisibility — gates the Admin Booking Panel's own
+  // catalogue separately from the POS counter (see
+  // common/utils/pos-catalogue-visibility.js).
+  adminBookingVisibility: { type: Boolean, default: true },
   // Marks this sub-category as a quick-access favourite — surfaced by the
   // POS Portal's static "Favorites" tab alongside favourite Items/Services.
   favorite: { type: Boolean, default: false },

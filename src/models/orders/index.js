@@ -21,7 +21,7 @@ const { auditablePlugin } = require("../../common/plugins/auditable");
 
 const orderLineSchema = new mongoose.Schema(
   {
-    refType: { type: String, enum: ["Item", "Service"], required: true },
+    refType: { type: String, enum: ["Item", "Service", "GeneralItem"], required: true },
     refId: { type: mongoose.Schema.Types.ObjectId, required: true, refPath: "refType" },
     name: { type: String, required: true },
     code: { type: String, required: true },

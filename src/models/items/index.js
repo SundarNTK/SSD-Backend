@@ -55,6 +55,10 @@ const itemSchema = new mongoose.Schema({
   maxFamilyMembers: { type: Number, default: 2 },
   posAvailability: { type: Boolean, default: true },
   customerPortalAvailability: { type: Boolean, default: true },
+  // Independent of posAvailability — gates the Admin Booking Panel's own
+  // catalogue separately from the POS counter (see
+  // common/utils/pos-catalogue-visibility.js).
+  adminBookingVisibility: { type: Boolean, default: true },
   // Marks this item as a quick-access favourite — surfaced by the POS
   // Portal's static "Favorites" tab, ahead of "All Categories".
   favorite: { type: Boolean, default: false },
@@ -76,6 +80,10 @@ itemSchema.index({ status: 1, posAvailability: 1, name: 1 });
 // same filter + sort shape as the index above, with favorite as the extra
 // equality filter.
 itemSchema.index({ status: 1, posAvailability: 1, favorite: 1, name: 1 });
+// Matches the Admin Booking Panel's catalogue query shape (controllers/pos
+// listPosItems when req.posPortal === "admin") — same reasoning as the
+// posAvailability index above, keyed on adminBookingVisibility instead.
+itemSchema.index({ status: 1, adminBookingVisibility: 1, name: 1 });
 
 // Every ref field indexed, including inside the categoryDetails array —
 // Mongoose supports indexing a dotted path into an array of subdocuments,

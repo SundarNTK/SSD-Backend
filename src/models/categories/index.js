@@ -13,6 +13,10 @@ const categorySchema = new mongoose.Schema({
   // may appear. Missing values are treated as visible (see POS catalogue).
   posVisibility: { type: Boolean, default: true },
   customerPortalVisibility: { type: Boolean, default: true },
+  // Independent of posVisibility — gates the Admin Booking Panel's own
+  // catalogue separately from the POS counter (see
+  // common/utils/pos-catalogue-visibility.js).
+  adminBookingVisibility: { type: Boolean, default: true },
   // Marks this category as a quick-access favourite — surfaced by the POS
   // Portal's static "Favorites" tab alongside favourite Items/Services.
   favorite: { type: Boolean, default: false },
