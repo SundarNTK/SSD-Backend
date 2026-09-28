@@ -14,11 +14,19 @@ const devoteeSchema = Joi.object({
 });
 
 const cartLineSchema = Joi.object({
-  refType: Joi.string().valid("Item", "Service").required(),
+  refType: Joi.string().valid("Item", "Service", "GeneralItem").required(),
   refId: Joi.string().hex().length(24).required(),
   quantity: Joi.number().integer().min(1).required(),
   deities: Joi.array().items(Joi.string().hex().length(24)).default([]),
   devotees: Joi.array().items(devoteeSchema).default([]),
+  // See controllers/pos/request-objects.js's matching field for the full
+  // rationale — General Items carry no master price, so the cashier's typed
+  // amount is trusted ONLY for that refType; Item/Service stay server-priced.
+  manualUnitPrice: Joi.number().min(0.01).when("refType", {
+    is: "GeneralItem",
+    then: Joi.required(),
+    otherwise: Joi.forbidden(),
+  }),
 }).required();
 
 /**

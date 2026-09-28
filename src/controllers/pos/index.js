@@ -67,6 +67,7 @@ const ensureCustomerProfileForUser = require("../../utilities/helpers/ensure-cus
 
 const Item = require("../../models/items");
 const Service = require("../../models/services");
+const GeneralItem = require("../../models/general-items");
 const Deity = require("../../models/deities");
 const Nakshathiram = require("../../models/nakshathirams");
 const Entity = require("../../models/entities");
@@ -111,6 +112,7 @@ const { effectiveQuantity } = require("../../common/utils/effective-quantity");
 const {
   POS_VISIBLE,
   loadPosVisibleHierarchy,
+  loadHierarchyForPortal,
   posHierarchyClause,
   offeringInPosHierarchy,
 } = require("../../common/utils/pos-catalogue-visibility");
@@ -430,10 +432,16 @@ async function listPosItems(req, res) {
     const page = Math.max(1, Number(req.query.page) || 1);
     const pageSize = Math.min(100, Number(req.query.pageSize) || 50);
 
-    const { categoryIds, subCategoryIds } = await loadPosVisibleHierarchy();
+    // Admin Booking Panel and POS Portal counter each have their own
+    // visibility gate — adminBookingVisibility vs posAvailability — driven
+    // by which route tree this request came in on (see setPortal()).
+    const isAdmin = req.posPortal === "admin";
+    const visField = isAdmin ? "adminBookingVisibility" : "posAvailability";
+    const categoryVisField = isAdmin ? "adminBookingVisibility" : "posVisibility";
+    const { categoryIds, subCategoryIds } = await loadHierarchyForPortal(req.posPortal);
 
     const and = [posHierarchyClause(categoryIds, subCategoryIds)];
-    const filter = Item.notDeletedFilter({ status: 1, posAvailability: true });
+    const filter = Item.notDeletedFilter({ status: 1, [visField]: true });
     if (req.query.search) {
       const regex = searchRegex(req.query.search);
       and.push({ $or: [{ name: regex }, { code: regex }] });
@@ -460,8 +468,8 @@ async function listPosItems(req, res) {
 
     const [items, total] = await Promise.all([
       Item.find(filter)
-        .populate({ path: "categoryDetails.category", select: "name color", match: { isDeleted: false, status: 1, posVisibility: POS_VISIBLE } })
-        .populate({ path: "categoryDetails.subCategory", select: "name", match: { isDeleted: false, status: 1, posVisibility: POS_VISIBLE } })
+        .populate({ path: "categoryDetails.category", select: "name color", match: { isDeleted: false, status: 1, [categoryVisField]: POS_VISIBLE } })
+        .populate({ path: "categoryDetails.subCategory", select: "name", match: { isDeleted: false, status: 1, [categoryVisField]: POS_VISIBLE } })
         .populate("generalLedger", "gstType")
         // Sorted by admin-assigned display order (ties alphabetical) so the
         // POS cart's Deities multi-select shows them in the configured
@@ -491,10 +499,13 @@ async function listPosServices(req, res) {
     const page = Math.max(1, Number(req.query.page) || 1);
     const pageSize = Math.min(100, Number(req.query.pageSize) || 50);
 
-    const { categoryIds, subCategoryIds } = await loadPosVisibleHierarchy();
+    const isAdmin = req.posPortal === "admin";
+    const visField = isAdmin ? "adminBookingVisibility" : "isPosAvailable";
+    const categoryVisField = isAdmin ? "adminBookingVisibility" : "posVisibility";
+    const { categoryIds, subCategoryIds } = await loadHierarchyForPortal(req.posPortal);
 
     const and = [posHierarchyClause(categoryIds, subCategoryIds)];
-    const filter = Service.notDeletedFilter({ status: 1, isPosAvailable: true });
+    const filter = Service.notDeletedFilter({ status: 1, [visField]: true });
     if (req.query.search) {
       const regex = searchRegex(req.query.search);
       and.push({ $or: [{ name: regex }, { code: regex }] });
@@ -520,8 +531,8 @@ async function listPosServices(req, res) {
 
     const [services, total] = await Promise.all([
       Service.find(filter)
-        .populate({ path: "categoryDetails.category", select: "name color", match: { isDeleted: false, status: 1, posVisibility: POS_VISIBLE } })
-        .populate({ path: "categoryDetails.subCategory", select: "name", match: { isDeleted: false, status: 1, posVisibility: POS_VISIBLE } })
+        .populate({ path: "categoryDetails.category", select: "name color", match: { isDeleted: false, status: 1, [categoryVisField]: POS_VISIBLE } })
+        .populate({ path: "categoryDetails.subCategory", select: "name", match: { isDeleted: false, status: 1, [categoryVisField]: POS_VISIBLE } })
         // Sorted by admin-assigned display order (ties alphabetical) so the
         // POS cart's Deities multi-select shows them in the configured
         // order, not insertion order — see models/deities' displayOrder.
@@ -536,6 +547,65 @@ async function listPosServices(req, res) {
     const servicesWithAvailability = await decorateServices(services);
 
     return responseHandler({ res, response: { items: servicesWithAvailability, total, page, pageSize } });
+  } catch (error) {
+    return exceptionHandler({ res, error });
+  }
+}
+
+/**
+ * GET /(booking|admin/booking)/general-items?search=&category=&page=&pageSize=
+ * General Items carry no salePrice — the amount is typed in by the cashier
+ * at the point of sale (see cartLineSchema's manualUnitPrice). Shown as its
+ * own separate browsing tab/picker, never folded into getCatalogue()'s
+ * Item/Service folder browser — see the General Item plan's rationale.
+ */
+async function listGeneralItems(req, res) {
+  try {
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const pageSize = Math.min(100, Number(req.query.pageSize) || 50);
+
+    const isAdmin = req.posPortal === "admin";
+    const visField = isAdmin ? "adminBookingVisibility" : "posAvailability";
+    const categoryVisField = isAdmin ? "adminBookingVisibility" : "posVisibility";
+    const { categoryIds, subCategoryIds } = await loadHierarchyForPortal(req.posPortal);
+
+    const and = [posHierarchyClause(categoryIds, subCategoryIds)];
+    const filter = GeneralItem.notDeletedFilter({ status: 1, [visField]: true });
+    if (req.query.search) {
+      const regex = searchRegex(req.query.search);
+      and.push({ $or: [{ name: regex }, { code: regex }] });
+    }
+    if (req.query.category) {
+      if (!categoryIds.some((id) => String(id) === String(req.query.category))) {
+        return responseHandler({ res, response: { items: [], total: 0, page, pageSize } });
+      }
+      filter["categoryDetails.category"] = req.query.category;
+    }
+    if (req.query.subCategory) {
+      if (!subCategoryIds.some((id) => String(id) === String(req.query.subCategory))) {
+        return responseHandler({ res, response: { items: [], total: 0, page, pageSize } });
+      }
+      filter["categoryDetails.subCategory"] = req.query.subCategory;
+    }
+    if (req.query.favorite === "true") {
+      filter.favorite = true;
+    }
+    filter.$and = and;
+
+    const [generalItems, total] = await Promise.all([
+      GeneralItem.find(filter)
+        .populate({ path: "categoryDetails.category", select: "name color", match: { isDeleted: false, status: 1, [categoryVisField]: POS_VISIBLE } })
+        .populate({ path: "categoryDetails.subCategory", select: "name", match: { isDeleted: false, status: 1, [categoryVisField]: POS_VISIBLE } })
+        .select("name tamilName code isInventoryApplicable currentStock threshold minQuantity maxQuantity categoryDetails image color favorite")
+        .sort({ name: 1 })
+        .skip((page - 1) * pageSize)
+        .limit(pageSize),
+      GeneralItem.countDocuments(filter),
+    ]);
+
+    const generalItemsWithAvailability = await decorateGeneralItems(generalItems);
+
+    return responseHandler({ res, response: { items: generalItemsWithAvailability, total, page, pageSize } });
   } catch (error) {
     return exceptionHandler({ res, error });
   }
@@ -590,6 +660,28 @@ async function decorateServices(services) {
     sessionRequired: svc.sessionRequired,
     favorite: Boolean(svc.favorite),
     inventory: availByRefId.get(String(svc._id)),
+  }));
+}
+
+/**
+ * General Items carry no price field — the frontend must never look for a
+ * salePrice/defaultSalePrice on these; the cashier types the amount in at
+ * add-to-cart time instead (see cartLineSchema's manualUnitPrice).
+ */
+async function decorateGeneralItems(generalItems) {
+  const availByRefId = await getAvailabilityBatch("GeneralItem", generalItems);
+  return generalItems.map((gi) => ({
+    _id: gi._id,
+    code: gi.code,
+    name: gi.name,
+    tamilName: gi.tamilName,
+    image: gi.image || null,
+    color: gi.color || "",
+    minQuantity: gi.minQuantity,
+    maxQuantity: gi.maxQuantity,
+    categoryDetails: gi.categoryDetails,
+    favorite: Boolean(gi.favorite),
+    inventory: availByRefId.get(String(gi._id)),
   }));
 }
 
@@ -875,7 +967,10 @@ async function bookingSummary(req, res) {
     if (error) throw error.details[0].message;
 
     const { customerId, lines } = value;
-    const hierarchy = await loadPosVisibleHierarchy();
+    const isAdmin = req.posPortal === "admin";
+    const itemVisField = isAdmin ? "adminBookingVisibility" : "posAvailability";
+    const svcVisField = isAdmin ? "adminBookingVisibility" : "isPosAvailable";
+    const hierarchy = await loadHierarchyForPortal(req.posPortal);
 
     // Validate customer exists
     const customer = await Customer.findOne(
@@ -892,10 +987,10 @@ async function bookingSummary(req, res) {
 
       if (refType === "Item") {
         const item = await Item.findOne(
-          Item.notDeletedFilter({ _id: refId, status: 1, posAvailability: true })
+          Item.notDeletedFilter({ _id: refId, status: 1, [itemVisField]: true })
         ).populate("generalLedger", "gstType");
         if (!item || !offeringInPosHierarchy(item, hierarchy.categoryIds, hierarchy.subCategoryIds)) {
-          throw `Item not found or not available at POS.`;
+          throw `Item not found or not available.`;
         }
 
         name = item.name;
@@ -903,12 +998,12 @@ async function bookingSummary(req, res) {
         unitPrice = item.salePrice;
         gstType = item.generalLedger?.gstType ?? null;
         generalLedgerId = item.generalLedger?._id ?? null;
-      } else {
+      } else if (refType === "Service") {
         const svc = await Service.findOne(
-          Service.notDeletedFilter({ _id: refId, status: 1, isPosAvailable: true })
+          Service.notDeletedFilter({ _id: refId, status: 1, [svcVisField]: true })
         ).populate("generalLedger", "gstType");
         if (!svc || !offeringInPosHierarchy(svc, hierarchy.categoryIds, hierarchy.subCategoryIds)) {
-          throw `Service not found or not available at POS.`;
+          throw `Service not found or not available.`;
         }
 
         name = svc.name;
@@ -916,6 +1011,22 @@ async function bookingSummary(req, res) {
         unitPrice = svc.salePrice ?? 0;
         gstType = svc.generalLedger?.gstType ?? null;
         generalLedgerId = svc.generalLedger?._id ?? null;
+      } else {
+        const gi = await GeneralItem.findOne(
+          GeneralItem.notDeletedFilter({ _id: refId, status: 1, [itemVisField]: true })
+        ).populate("generalLedger", "gstType");
+        if (!gi || !offeringInPosHierarchy(gi, hierarchy.categoryIds, hierarchy.subCategoryIds)) {
+          throw `Product not found or not available.`;
+        }
+
+        name = gi.name;
+        code = gi.code;
+        // General Items carry no master price — the cashier's typed amount
+        // is trusted here ONLY because Joi forbids manualUnitPrice for any
+        // other refType (see cartLineSchema).
+        unitPrice = line.manualUnitPrice;
+        gstType = gi.generalLedger?.gstType ?? null;
+        generalLedgerId = gi.generalLedger?._id ?? null;
       }
 
       const gstRate = await resolveGstRate(gstType);
@@ -1027,7 +1138,10 @@ async function recheckLines(req, res) {
     const { error, value } = recheckLinesSchema.validate(req.body);
     if (error) throw error.details[0].message;
 
-    const hierarchy = await loadPosVisibleHierarchy();
+    const isAdmin = req.posPortal === "admin";
+    const itemVisField = isAdmin ? "adminBookingVisibility" : "posAvailability";
+    const svcVisField = isAdmin ? "adminBookingVisibility" : "isPosAvailable";
+    const hierarchy = await loadHierarchyForPortal(req.posPortal);
     const results = await Promise.all(
       value.lines.map(async (line) => {
         const { refType, refId, quantity, deities, devotees } = line;
@@ -1040,7 +1154,7 @@ async function recheckLines(req, res) {
         // derivable from the plain name/code/price already returned here).
         let name, code, unitPrice, offeringMeta;
         if (refType === "Item") {
-          const item = await Item.findOne(Item.notDeletedFilter({ _id: refId, status: 1, posAvailability: true })).populate({
+          const item = await Item.findOne(Item.notDeletedFilter({ _id: refId, status: 1, [itemVisField]: true })).populate({
             path: "deityMapping",
             select: "name tamilName color",
             options: { sort: { displayOrder: 1, name: 1 } },
@@ -1060,8 +1174,8 @@ async function recheckLines(req, res) {
             isFamilyMembersRequired: item.isFamilyMembersRequired,
             maxFamilyMembers: item.maxFamilyMembers,
           };
-        } else {
-          const svc = await Service.findOne(Service.notDeletedFilter({ _id: refId, status: 1, isPosAvailable: true })).populate({
+        } else if (refType === "Service") {
+          const svc = await Service.findOne(Service.notDeletedFilter({ _id: refId, status: 1, [svcVisField]: true })).populate({
             path: "deityMapping",
             select: "name tamilName color",
             options: { sort: { displayOrder: 1, name: 1 } },
@@ -1080,6 +1194,25 @@ async function recheckLines(req, res) {
             deityMapping: svc.deityMapping,
             isFamilyMembersRequired: svc.isFamilyMembersRequired,
             maxFamilyMembers: svc.maxFamilyMembers,
+          };
+        } else {
+          const gi = await GeneralItem.findOne(GeneralItem.notDeletedFilter({ _id: refId, status: 1, [itemVisField]: true }));
+          if (!gi || !offeringInPosHierarchy(gi, hierarchy.categoryIds, hierarchy.subCategoryIds)) {
+            return { ...base, available: false, reason: "No longer available for sale." };
+          }
+          name = gi.name;
+          code = gi.code;
+          // No master price to re-derive — carry the cart's own typed
+          // amount forward as-is (repeat-booking replays it unchanged).
+          unitPrice = line.manualUnitPrice;
+          offeringMeta = {
+            tamilName: gi.tamilName,
+            image: gi.image || null,
+            color: gi.color || "",
+            isDeityMappingRequired: false,
+            deityMapping: [],
+            isFamilyMembersRequired: false,
+            maxFamilyMembers: 0,
           };
         }
 
@@ -1146,7 +1279,10 @@ async function createOrder(req, res) {
     if (error) throw error.details[0].message;
 
     const { customerId, lines, paymentModeId, paidAmount } = value;
-    const hierarchy = await loadPosVisibleHierarchy();
+    const isAdmin = req.posPortal === "admin";
+    const itemVisField = isAdmin ? "adminBookingVisibility" : "posAvailability";
+    const svcVisField = isAdmin ? "adminBookingVisibility" : "isPosAvailable";
+    const hierarchy = await loadHierarchyForPortal(req.posPortal);
 
     const customer = await Customer.findOne(
       Customer.notDeletedFilter({ _id: customerId, status: 1 })
@@ -1167,7 +1303,7 @@ async function createOrder(req, res) {
 
       if (refType === "Item") {
         const item = await Item.findOne(
-          Item.notDeletedFilter({ _id: refId, status: 1, posAvailability: true })
+          Item.notDeletedFilter({ _id: refId, status: 1, [itemVisField]: true })
         ).populate("generalLedger", "gstType");
         if (!item || !offeringInPosHierarchy(item, hierarchy.categoryIds, hierarchy.subCategoryIds)) {
           throw `An item in the cart is no longer available.`;
@@ -1177,9 +1313,9 @@ async function createOrder(req, res) {
         unitPrice = item.salePrice;
         gstType = item.generalLedger?.gstType ?? null;
         generalLedgerId = item.generalLedger?._id ?? null;
-      } else {
+      } else if (refType === "Service") {
         const svc = await Service.findOne(
-          Service.notDeletedFilter({ _id: refId, status: 1, isPosAvailable: true })
+          Service.notDeletedFilter({ _id: refId, status: 1, [svcVisField]: true })
         ).populate("generalLedger", "gstType");
         if (!svc || !offeringInPosHierarchy(svc, hierarchy.categoryIds, hierarchy.subCategoryIds)) {
           throw `A service in the cart is no longer available.`;
@@ -1189,6 +1325,18 @@ async function createOrder(req, res) {
         unitPrice = svc.salePrice ?? 0;
         gstType = svc.generalLedger?.gstType ?? null;
         generalLedgerId = svc.generalLedger?._id ?? null;
+      } else {
+        const gi = await GeneralItem.findOne(
+          GeneralItem.notDeletedFilter({ _id: refId, status: 1, [itemVisField]: true })
+        ).populate("generalLedger", "gstType");
+        if (!gi || !offeringInPosHierarchy(gi, hierarchy.categoryIds, hierarchy.subCategoryIds)) {
+          throw `A product in the cart is no longer available.`;
+        }
+        name = gi.name;
+        code = gi.code;
+        unitPrice = line.manualUnitPrice;
+        gstType = gi.generalLedger?.gstType ?? null;
+        generalLedgerId = gi.generalLedger?._id ?? null;
       }
 
       const gstRate = await resolveGstRate(gstType);
@@ -1911,6 +2059,7 @@ function registerCatalogueRoutes(r) {
   r.get("/customers/:id/recent-bookings", requirePermission("admin-booking", "view"), getRecentBookings);
   r.get("/items",               requirePermission("admin-booking", "view"),       listPosItems);
   r.get("/services",            requirePermission("admin-booking", "view"),       listPosServices);
+  r.get("/general-items",       requirePermission("admin-booking", "view"),       listGeneralItems);
   r.get("/payment-modes",       requirePaymentModeAccess,                         listPaymentModes);
   r.get("/catalogue",           requirePermission("admin-booking", "view"),       getCatalogue);
   r.get("/deities",             requirePermission("admin-booking", "view"),       listDeities);

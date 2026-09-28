@@ -58,6 +58,10 @@ const serviceSchema = new mongoose.Schema({
   bookingCutoffDate: { type: Date, default: null },
   isPosAvailable: { type: Boolean, default: true },
   publicAvailability: { type: Boolean, default: true },
+  // Independent of isPosAvailable — gates the Admin Booking Panel's own
+  // catalogue separately from the POS counter (see
+  // common/utils/pos-catalogue-visibility.js).
+  adminBookingVisibility: { type: Boolean, default: true },
   // Marks this service as a quick-access favourite — surfaced by the POS
   // Portal's static "Favorites" tab, ahead of "All Categories".
   favorite: { type: Boolean, default: false },
@@ -73,6 +77,9 @@ serviceSchema.index({ status: 1, createdAt: -1 });
 serviceSchema.index({ status: 1, isPosAvailable: 1, name: 1 });
 // Backs the POS Portal's Favorites tab (GET /pos/booking/services?favorite=true).
 serviceSchema.index({ status: 1, isPosAvailable: 1, favorite: 1, name: 1 });
+// Matches the Admin Booking Panel's catalogue query shape (controllers/pos
+// listPosServices when req.posPortal === "admin").
+serviceSchema.index({ status: 1, adminBookingVisibility: 1, name: 1 });
 
 // Every ref field indexed, including inside the categoryDetails array and the
 // deityMapping array — Mongoose supports indexing a dotted/array path into

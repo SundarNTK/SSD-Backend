@@ -10,7 +10,7 @@ const { auditablePlugin } = require("../../common/plugins/auditable");
  * are never exercised on a row that's meant to be a permanent record).
  */
 const inventoryAdjustmentSchema = new mongoose.Schema({
-  refType: { type: String, enum: ["Item", "Service"], required: true },
+  refType: { type: String, enum: ["Item", "Service", "GeneralItem"], required: true },
   // Dynamic ref — resolves to Item or Service per-document via refPath,
   // matching this row's own refType.
   refId: { type: mongoose.Schema.Types.ObjectId, required: true, refPath: "refType" },

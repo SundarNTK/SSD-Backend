@@ -72,6 +72,7 @@ const AVAILABLE_MODULES = [
   { key: "sub-categories", label: "Sub Category Master", group: "Masters" },
   { key: "items", label: "Item Master", group: "Masters" },
   { key: "services", label: "Service Master", group: "Masters" },
+  { key: "general-items", label: "General Item Master", group: "Masters" },
   { key: "events", label: "Event Master", group: "Masters" },
   { key: "nakshathirams", label: "Nakshathiram Master", group: "Masters" },
   { key: "payment-modes", label: "Payment Mode Master", group: "Masters" },

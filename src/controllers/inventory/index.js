@@ -8,12 +8,18 @@ const escapeRegex = require("../../common/utils/escape-regex");
 
 const Item = require("../../models/items");
 const Service = require("../../models/services");
+const GeneralItem = require("../../models/general-items");
 const InventoryAdjustment = require("../../models/inventory-adjustments");
 const { createAdjustmentSchema } = require("./request-objects");
 
 // Not nested under the /masters group router (see routes/index.js), so
 // authGuard/adminOnly are applied here directly — same as roles/users.
-const REF_MODELS = { Item, Service };
+const REF_MODELS = { Item, Service, GeneralItem };
+// GeneralItem mirrors Item's inventory field names (isInventoryApplicable/
+// threshold), so it reuses Item's branch wherever this ternary is used.
+function applicableFieldFor(refType) {
+  return refType === "Service" ? "isInventoryRequired" : "isInventoryApplicable";
+}
 
 function searchRegex(term) {
   return new RegExp(escapeRegex(term.trim()), "i");
@@ -29,10 +35,10 @@ function searchRegex(term) {
 async function options(req, res) {
   try {
     const refType = req.query.refType;
-    if (!["Item", "Service"].includes(refType)) throw "A valid refType (Item or Service) is required.";
+    if (!["Item", "Service", "GeneralItem"].includes(refType)) throw "A valid refType (Item, Service or GeneralItem) is required.";
 
     const Model = REF_MODELS[refType];
-    const applicableField = refType === "Item" ? "isInventoryApplicable" : "isInventoryRequired";
+    const applicableField = applicableFieldFor(refType);
     const rows = await Model.find(Model.notDeletedFilter({ [applicableField]: true, status: 1 }))
       .select("name code currentStock")
       .sort({ name: 1 })
@@ -86,8 +92,22 @@ async function availableStock(req, res) {
       }));
     }
 
-    const [items, services] = await Promise.all([loadItems(), loadServices()]);
-    const merged = [...items, ...services].sort((a, b) => a.name.localeCompare(b.name));
+    async function loadGeneralItems() {
+      if (type && type !== "GeneralItem") return [];
+      const filter = GeneralItem.notDeletedFilter({ isInventoryApplicable: true, status: 1 });
+      if (search) filter.$or = [{ name: search }, { code: search }];
+      const rows = await GeneralItem.find(filter).select("name code currentStock").sort({ name: 1 });
+      return rows.map((r) => ({
+        _id: r._id,
+        refType: "GeneralItem",
+        name: r.name,
+        code: r.code,
+        availableQuantity: r.currentStock,
+      }));
+    }
+
+    const [items, services, generalItems] = await Promise.all([loadItems(), loadServices(), loadGeneralItems()]);
+    const merged = [...items, ...services, ...generalItems].sort((a, b) => a.name.localeCompare(b.name));
 
     const total = merged.length;
     const start = (page - 1) * pageSize;
@@ -164,11 +184,12 @@ async function outOfStock(req, res) {
       }));
     }
 
-    const [items, services] = await Promise.all([
-      req.query.type === "Service" ? [] : load(Item, "Item", "isInventoryApplicable", "threshold"),
-      req.query.type === "Item" ? [] : load(Service, "Service", "isInventoryRequired", "thresholdCount"),
+    const [items, services, generalItems] = await Promise.all([
+      req.query.type && req.query.type !== "Item" ? [] : load(Item, "Item", "isInventoryApplicable", "threshold"),
+      req.query.type && req.query.type !== "Service" ? [] : load(Service, "Service", "isInventoryRequired", "thresholdCount"),
+      req.query.type && req.query.type !== "GeneralItem" ? [] : load(GeneralItem, "GeneralItem", "isInventoryApplicable", "threshold"),
     ]);
-    const merged = [...items, ...services].sort((a, b) => a.name.localeCompare(b.name));
+    const merged = [...items, ...services, ...generalItems].sort((a, b) => a.name.localeCompare(b.name));
     const start = (page - 1) * pageSize;
 
     return responseHandler({ res, response: { items: merged.slice(start, start + pageSize), total: merged.length, page, pageSize } });
@@ -190,16 +211,17 @@ async function history(req, res) {
     const pageSize = Math.min(100, Number(req.query.pageSize) || 20);
     const filter = {};
 
-    const refType = req.query.refType; // "Item" | "Service" | undefined
-    if (refType === "Item" || refType === "Service") filter.refType = refType;
+    const refType = req.query.refType; // "Item" | "Service" | "GeneralItem" | undefined
+    if (["Item", "Service", "GeneralItem"].includes(refType)) filter.refType = refType;
 
     if (req.query.search) {
       const regex = searchRegex(req.query.search);
-      const [matchingItems, matchingServices] = await Promise.all([
-        refType === "Service" ? [] : Item.find({ isDeleted: false, $or: [{ name: regex }, { code: regex }] }).select("_id"),
-        refType === "Item" ? [] : Service.find({ isDeleted: false, $or: [{ name: regex }, { code: regex }] }).select("_id"),
+      const [matchingItems, matchingServices, matchingGeneralItems] = await Promise.all([
+        refType && refType !== "Item" ? [] : Item.find({ isDeleted: false, $or: [{ name: regex }, { code: regex }] }).select("_id"),
+        refType && refType !== "Service" ? [] : Service.find({ isDeleted: false, $or: [{ name: regex }, { code: regex }] }).select("_id"),
+        refType && refType !== "GeneralItem" ? [] : GeneralItem.find({ isDeleted: false, $or: [{ name: regex }, { code: regex }] }).select("_id"),
       ]);
-      filter.refId = { $in: [...matchingItems, ...matchingServices].map((r) => r._id) };
+      filter.refId = { $in: [...matchingItems, ...matchingServices, ...matchingGeneralItems].map((r) => r._id) };
     }
 
     const [rows, total] = await Promise.all([
@@ -244,7 +266,7 @@ async function createAdjustment(req, res) {
   try {
     const { refType, refId, inventoryType, quantity, remarks } = req.body;
     const Model = REF_MODELS[refType];
-    const applicableField = refType === "Item" ? "isInventoryApplicable" : "isInventoryRequired";
+    const applicableField = applicableFieldFor(refType);
 
     const ref = await Model.findOne(Model.notDeletedFilter({ _id: refId, [applicableField]: true }));
     if (!ref) throw `The selected ${refType.toLowerCase()} doesn't exist or isn't inventory-applicable.`;
