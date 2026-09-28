@@ -39,24 +39,27 @@
 
 const Item = require("../../models/items");
 const Service = require("../../models/services");
+const GeneralItem = require("../../models/general-items");
 const InventoryReservation = require("../../models/inventory-reservations");
 
 const RESERVATION_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
-const REF_MODELS = { Item, Service };
+const REF_MODELS = { Item, Service, GeneralItem };
 
 /**
  * Returns the field name that gates inventory tracking for a given refType.
+ * GeneralItem reuses Item's field names (isInventoryApplicable/threshold) —
+ * see models/general-items, which mirrors Item's inventory shape exactly.
  */
 function inventoryFlag(refType) {
-  return refType === "Item" ? "isInventoryApplicable" : "isInventoryRequired";
+  return refType === "Service" ? "isInventoryRequired" : "isInventoryApplicable";
 }
 
 /**
  * Returns the threshold field name for a given refType.
  */
 function thresholdField(refType) {
-  return refType === "Item" ? "threshold" : "thresholdCount";
+  return refType === "Service" ? "thresholdCount" : "threshold";
 }
 
 /**

@@ -9,6 +9,7 @@ const Category = require("../../models/categories");
 const SubCategory = require("../../models/sub-categories");
 const Item = require("../../models/items");
 const Service = require("../../models/services");
+const GeneralItem = require("../../models/general-items");
 const Event = require("../../models/events");
 const { createSchema, updateSchema } = require("./request-objects");
 const { fields: importExportFields, validateRow, sampleRows } = require("./import-export-fields");
@@ -23,6 +24,7 @@ const crud = makeCrudController(Category, {
     { model: SubCategory, field: "category", label: "Sub Category" },
     { model: Item, field: "categoryDetails.category", label: "Item" },
     { model: Service, field: "categoryDetails.category", label: "Service" },
+    { model: GeneralItem, field: "categoryDetails.category", label: "General Item" },
     { model: Event, field: "category", label: "Event" },
   ],
 });

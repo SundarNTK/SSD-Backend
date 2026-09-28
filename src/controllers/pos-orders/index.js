@@ -46,6 +46,7 @@ const { assertPaynowConfigured, renderQrImage } = require("../payments/paynow/ge
 
 const Item = require("../../models/items");
 const Service = require("../../models/services");
+const GeneralItem = require("../../models/general-items");
 const { Customer } = require("../../models/customers");
 const PaymentMode = require("../../models/payment-modes");
 const { PosOrder } = require("../../models/pos-orders");
@@ -186,7 +187,7 @@ async function createOrder(req, res) {
         unitPrice = item.salePrice;
         gstType = item.generalLedger?.gstType ?? null;
         generalLedgerId = item.generalLedger?._id ?? null;
-      } else {
+      } else if (refType === "Service") {
         const svc = await Service.findOne(
           Service.notDeletedFilter({ _id: refId, status: 1, isPosAvailable: true })
         ).populate("generalLedger", "gstType");
@@ -198,6 +199,20 @@ async function createOrder(req, res) {
         unitPrice = svc.salePrice ?? 0;
         gstType = svc.generalLedger?.gstType ?? null;
         generalLedgerId = svc.generalLedger?._id ?? null;
+      } else {
+        const gi = await GeneralItem.findOne(
+          GeneralItem.notDeletedFilter({ _id: refId, status: 1, posAvailability: true })
+        ).populate("generalLedger", "gstType");
+        if (!gi || !offeringInPosHierarchy(gi, hierarchy.categoryIds, hierarchy.subCategoryIds)) {
+          throw `A product in the cart is no longer available.`;
+        }
+        name = gi.name;
+        code = gi.code;
+        // General Items carry no master price — trusted here ONLY because
+        // Joi forbids manualUnitPrice for every other refType.
+        unitPrice = line.manualUnitPrice;
+        gstType = gi.generalLedger?.gstType ?? null;
+        generalLedgerId = gi.generalLedger?._id ?? null;
       }
 
       const gstRate = await resolveGstRate(gstType);
@@ -800,19 +815,26 @@ async function computeBookingTicketGroups(bookingId) {
   ]);
   const splitMode = setting?.mode ?? "PRINT_GROUP_WISE";
 
-  // Batch-load every Item/Service referenced by this booking's lines in two
-  // queries total, not one per line.
+  // Batch-load every Item/Service/GeneralItem referenced by this booking's
+  // lines in three queries total, not one per line.
   const itemIds = booking.lines.filter((l) => l.refType === "Item").map((l) => l.refId);
   const serviceIds = booking.lines.filter((l) => l.refType === "Service").map((l) => l.refId);
-  const [items, services] = await Promise.all([
+  const generalItemIds = booking.lines.filter((l) => l.refType === "GeneralItem").map((l) => l.refId);
+  const [items, services, generalItems] = await Promise.all([
     itemIds.length
       ? Item.find({ _id: { $in: itemIds } }).select("isDeityMappingRequired printingGroup tamilName").populate("printingGroup", "name")
       : [],
     serviceIds.length
       ? Service.find({ _id: { $in: serviceIds } }).select("isDeityMappingRequired printingGroup tamilName").populate("printingGroup", "name")
       : [],
+    // GeneralItem has no isDeityMappingRequired field — resolveLineUnits
+    // treats that as falsy and resolves the printing group straight off
+    // offeringDoc.printingGroup, which is exactly what we want here.
+    generalItemIds.length
+      ? GeneralItem.find({ _id: { $in: generalItemIds } }).select("printingGroup tamilName").populate("printingGroup", "name")
+      : [],
   ]);
-  const offeringsById = new Map([...items, ...services].map((doc) => [String(doc._id), doc]));
+  const offeringsById = new Map([...items, ...services, ...generalItems].map((doc) => [String(doc._id), doc]));
 
   const units = booking.lines.flatMap((line) => resolveLineUnits(line, offeringsById.get(String(line.refId)), line.deities));
   const ticketGroups = buildTicketGroups(units, splitMode);

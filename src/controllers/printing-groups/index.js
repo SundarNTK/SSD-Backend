@@ -10,6 +10,7 @@ const PrintingGroup = require("../../models/printing-groups");
 const Deity = require("../../models/deities");
 const Item = require("../../models/items");
 const Service = require("../../models/services");
+const GeneralItem = require("../../models/general-items");
 const { createSchema, updateSchema } = require("./request-objects");
 const { fields: importExportFields, sampleRows } = require("./import-export-fields");
 
@@ -108,6 +109,7 @@ const crud = makeCrudController(PrintingGroup, {
     { model: Deity, field: "printingGroup", label: "Deity" },
     { model: Item, field: "printingGroup", label: "Item" },
     { model: Service, field: "printingGroup", label: "Service" },
+    { model: GeneralItem, field: "printingGroup", label: "General Item" },
   ],
 });
 

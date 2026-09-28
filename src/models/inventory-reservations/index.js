@@ -28,7 +28,7 @@ const mongoose = require("mongoose");
 const inventoryReservationSchema = new mongoose.Schema(
   {
     orderId: { type: mongoose.Schema.Types.ObjectId, ref: "Order", required: true },
-    refType: { type: String, enum: ["Item", "Service"], required: true },
+    refType: { type: String, enum: ["Item", "Service", "GeneralItem"], required: true },
     refId: { type: mongoose.Schema.Types.ObjectId, required: true },
     quantity: { type: Number, required: true, min: 1 },
     // "active" → holds quantity from the pool

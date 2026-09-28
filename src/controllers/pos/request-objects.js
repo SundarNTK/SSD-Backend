@@ -22,13 +22,23 @@ const addFamilyMembersSchema = Joi.object({
 });
 
 const cartLineSchema = Joi.object({
-  refType: Joi.string().valid("Item", "Service").required(),
+  refType: Joi.string().valid("Item", "Service", "GeneralItem").required(),
   refId: Joi.string().hex().length(24).required(),
   quantity: Joi.number().integer().min(1).required(),
   // For services: which deity ids this line is for
   deities: Joi.array().items(Joi.string().hex().length(24)).default([]),
   // Devotee names + nakshatras
   devotees: Joi.array().items(devoteeSchema).default([]),
+  // General Items carry no master salePrice — the cashier types the amount
+  // in at the point of sale, and the server trusts it ONLY for this
+  // refType. Item/Service pricing stays fully server-resolved from the
+  // master record — .forbidden() here rejects any client-sent price for
+  // those two outright, rather than silently ignoring it.
+  manualUnitPrice: Joi.number().min(0.01).when("refType", {
+    is: "GeneralItem",
+    then: Joi.required(),
+    otherwise: Joi.forbidden(),
+  }),
 }).required();
 
 /**
