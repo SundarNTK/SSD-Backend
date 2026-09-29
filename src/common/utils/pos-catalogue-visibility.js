@@ -23,7 +23,7 @@ async function loadVisibleHierarchy(field) {
       [field]: POS_VISIBLE,
       category: { $in: categoryIds },
     })
-  ).select("name tamilName color image category");
+  ).select("name tamilName color image category displayOrder");
   return { categories, subCategories, categoryIds, subCategoryIds: subCategories.map((s) => s._id) };
 }
 
