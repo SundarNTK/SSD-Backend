@@ -808,12 +808,33 @@ async function computeBookingTicketGroups(bookingId) {
   // in-memory booking only; never written back.
   await enrichBookingDevoteesForPrint(booking);
 
-  const [setting, receiptTxn, entity] = await Promise.all([
+  const [setting, paidTxns, entity] = await Promise.all([
     PrintSplitSetting.findOne({}),
-    PosTransaction.findOne(PosTransaction.notDeletedFilter({ bookingId: booking._id })).sort({ transactionDate: 1 }).select("receiptNo"),
+    // ALL paid installments, not just the first — a partially-paid booking
+    // can be topped up on a different mode than it was opened with (Cash
+    // first, NETS for the balance), and the printed ticket must show every
+    // mode that actually landed money, not just whichever one happened
+    // first. Oldest first so paymentModeNames below comes out in the order
+    // each mode was actually collected.
+    PosTransaction.find(PosTransaction.notDeletedFilter({ bookingId: booking._id, paymentStatus: "paid" }))
+      .sort({ transactionDate: 1 })
+      .select("receiptNo paymentModeName"),
     booking.entity ? findActiveEntityById(booking.entity) : Promise.resolve(null),
   ]);
   const splitMode = setting?.mode ?? "PRINT_GROUP_WISE";
+
+  // Deduped, oldest-first — two Cash installments still print as just
+  // "CASH", while Cash + NETS prints as "CASH, NETS". Falls back to the
+  // booking's own paymentModeName on the (should-never-happen) chance a
+  // confirmed booking has no paid transaction row yet.
+  const paymentModeNames = [];
+  const seenModeNames = new Set();
+  for (const t of paidTxns) {
+    if (seenModeNames.has(t.paymentModeName)) continue;
+    seenModeNames.add(t.paymentModeName);
+    paymentModeNames.push(t.paymentModeName);
+  }
+  if (paymentModeNames.length === 0) paymentModeNames.push(booking.paymentModeName);
 
   // Batch-load every Item/Service/GeneralItem referenced by this booking's
   // lines in three queries total, not one per line.
@@ -841,7 +862,17 @@ async function computeBookingTicketGroups(bookingId) {
 
   return {
     ticketGroups,
-    receipt: { receiptNo: receiptTxn?.receiptNo ?? null, bookingNumber: booking.bookingNumber, printedAt: new Date().toISOString() },
+    receipt: {
+      receiptNo: paidTxns[0]?.receiptNo ?? null,
+      bookingNumber: booking.bookingNumber,
+      printedAt: new Date().toISOString(),
+      // Every payment mode that actually landed money on this booking, in
+      // the order it was collected — see printTicketForBooking (frontend)
+      // and confirmAndPrintNetsPayment (Nets-Service EXE), both of which
+      // print "<mode>, <mode>, ..." on the ticket from this instead of a
+      // single hardcoded/first-payment-only mode name.
+      paymentModeNames,
+    },
     temple: entity ? { name: entity.templeName || entity.name, tamilName: entity.templeTamilName || "" } : null,
     customer: booking.customerInfo,
     splitMode,
