@@ -807,6 +807,7 @@ async function getCatalogue(req, res) {
           subCategoryTamilName: subCategoryById.get(subId)?.tamilName || null,
           color: subCategoryById.get(subId)?.color ?? null,
           image: subCategoryById.get(subId)?.image || null,
+          displayOrder: subCategoryById.get(subId)?.displayOrder ?? null,
           itemIds: new Set(),
           serviceIds: new Set(),
         });
@@ -843,11 +844,17 @@ async function getCatalogue(req, res) {
         subCategoryTamilName: f.subCategoryTamilName,
         color: f.color,
         image: f.image || null,
+        displayOrder: f.displayOrder,
         itemCount: f.itemIds.size,
         serviceCount: f.serviceIds.size,
         total: f.itemIds.size + f.serviceIds.size,
       }))
-      .sort((a, b) => a.subCategoryName.localeCompare(b.subCategoryName));
+      .sort((a, b) => {
+        const aOrder = a.displayOrder != null ? a.displayOrder : Infinity;
+        const bOrder = b.displayOrder != null ? b.displayOrder : Infinity;
+        if (aOrder !== bOrder) return aOrder - bOrder;
+        return a.subCategoryName.localeCompare(b.subCategoryName);
+      });
 
     const categoriesOut = categories
       .map((c) => {
