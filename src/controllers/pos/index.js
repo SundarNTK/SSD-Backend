@@ -77,6 +77,10 @@ const { Order } = require("../../models/orders");
 const { Booking, BOOKING_STATUSES } = require("../../models/bookings");
 const { Transaction } = require("../../models/transactions");
 const { PosBooking } = require("../../models/pos-bookings");
+const PrintSplitSetting = require("../../models/print-split-settings");
+const findActiveEntityById = require("../../utilities/helpers/find-active-entity-by-id");
+const { enrichBookingDevoteesForPrint } = require("../../common/utils/enrich-devotees-for-print");
+const { resolveLineUnits, buildTicketGroups } = require("../../common/utils/ticket-grouping");
 
 const {
   placeReservationsForOrder,
@@ -2000,6 +2004,108 @@ async function recordBookingPayment(req, res) {
   }
 }
 
+/**
+ * Resolves a confirmed Admin Booking's lines into physical print tickets —
+ * the Admin Booking Page's own counterpart to controllers/pos-orders'
+ * computeBookingTicketGroups, which does the exact same job for the POS
+ * Portal's PosBooking/PosTransaction collections. The Admin Booking screen
+ * was never wired to any ticket-groups resolver at all until now (it writes
+ * to the older, shared Booking/Transaction collections instead), so this is
+ * a straight port of that function onto this module's own models rather
+ * than a shared implementation — the two booking trees intentionally don't
+ * share write models (see the module doc comment above), so this has no
+ * single collection to query against.
+ *
+ * @returns {Promise<{ticketGroups, receipt, temple, customer, splitMode}>}
+ */
+async function computeAdminBookingTicketGroups(bookingId) {
+  if (!mongoose.isValidObjectId(bookingId)) throw "Invalid booking ID.";
+
+  const booking = await Booking.findOne(Booking.notDeletedFilter({ _id: bookingId })).populate({
+    path: "lines.deities",
+    select: "name tamilName printingGroup printOrder",
+    populate: { path: "printingGroup", select: "name" },
+  });
+  if (!booking) throw "Booking not found.";
+  // Determines the order deity-wise tickets print in for a multi-deity
+  // line (see models/deities' printOrder field) — sorted here, in JS, not
+  // via the populate above: Mongoose can't apply a populate `sort` to a
+  // path nested inside a document array like lines.deities.
+  sortLineDeities(booking, "printOrder");
+
+  // Print tickets in Tamil for devotee name + star — resolve nakshatra
+  // from the master and transliterate Latin devotee names. Done on the
+  // in-memory booking only; never written back.
+  await enrichBookingDevoteesForPrint(booking);
+
+  const [setting, paidTxns, entity] = await Promise.all([
+    PrintSplitSetting.findOne({}),
+    // ALL paid installments, not just the first — see the matching comment
+    // on controllers/pos-orders' computeBookingTicketGroups for why.
+    Transaction.find(Transaction.notDeletedFilter({ bookingId: booking._id, paymentStatus: "paid" }))
+      .sort({ transactionDate: 1 })
+      .select("receiptNo paymentModeName"),
+    booking.entity ? findActiveEntityById(booking.entity) : Promise.resolve(null),
+  ]);
+  const splitMode = setting?.mode ?? "PRINT_GROUP_WISE";
+
+  const paymentModeNames = [];
+  const seenModeNames = new Set();
+  for (const t of paidTxns) {
+    if (seenModeNames.has(t.paymentModeName)) continue;
+    seenModeNames.add(t.paymentModeName);
+    paymentModeNames.push(t.paymentModeName);
+  }
+  if (paymentModeNames.length === 0) paymentModeNames.push(booking.paymentModeName);
+
+  // Batch-load every Item/Service/GeneralItem referenced by this booking's
+  // lines in three queries total, not one per line.
+  const itemIds = booking.lines.filter((l) => l.refType === "Item").map((l) => l.refId);
+  const serviceIds = booking.lines.filter((l) => l.refType === "Service").map((l) => l.refId);
+  const generalItemIds = booking.lines.filter((l) => l.refType === "GeneralItem").map((l) => l.refId);
+  const [items, services, generalItems] = await Promise.all([
+    itemIds.length
+      ? Item.find({ _id: { $in: itemIds } }).select("isDeityMappingRequired printingGroup tamilName").populate("printingGroup", "name")
+      : [],
+    serviceIds.length
+      ? Service.find({ _id: { $in: serviceIds } }).select("isDeityMappingRequired printingGroup tamilName").populate("printingGroup", "name")
+      : [],
+    generalItemIds.length
+      ? GeneralItem.find({ _id: { $in: generalItemIds } }).select("printingGroup tamilName").populate("printingGroup", "name")
+      : [],
+  ]);
+  const offeringsById = new Map([...items, ...services, ...generalItems].map((doc) => [String(doc._id), doc]));
+
+  const units = booking.lines.flatMap((line) => resolveLineUnits(line, offeringsById.get(String(line.refId)), line.deities));
+  const ticketGroups = buildTicketGroups(units, splitMode);
+
+  return {
+    ticketGroups,
+    receipt: {
+      receiptNo: paidTxns[0]?.receiptNo ?? null,
+      bookingNumber: booking.bookingNumber,
+      printedAt: new Date().toISOString(),
+      paymentModeNames,
+    },
+    temple: entity ? { name: entity.templeName || entity.name, tamilName: entity.templeTamilName || "" } : null,
+    customer: booking.customerInfo,
+    splitMode,
+  };
+}
+
+/**
+ * GET /pos/admin/booking/bookings/:id/ticket-groups — thin HTTP wrapper, see
+ * computeAdminBookingTicketGroups above.
+ */
+async function getAdminBookingTicketGroups(req, res) {
+  try {
+    const result = await computeAdminBookingTicketGroups(req.params.id);
+    return responseHandler({ res, response: result });
+  } catch (error) {
+    return exceptionHandler({ res, error, statusCode: typeof error === "string" ? 400 : undefined });
+  }
+}
+
 // ─── router assembly ──────────────────────────────────────────────────────────
 
 /**
@@ -2085,6 +2191,7 @@ function registerAdminBookingWriteRoutes(r) {
 
   r.get("/bookings",            requirePermission("pos-transactions", "view"),    listBookings);
   r.get("/bookings/:id",        requirePermission("pos-transactions", "view"),    getBookingDetail);
+  r.get("/bookings/:id/ticket-groups", requirePermission("pos-transactions", "view"), getAdminBookingTicketGroups);
 
   r.post("/bookings/:id/payments", requirePermission("pos-transactions", "fullAccess"), validateBody(recordPaymentSchema), recordBookingPayment);
 }
@@ -2124,3 +2231,5 @@ module.exports.getOrderStatus = getOrderStatus;
 module.exports.effectiveQuantity = effectiveQuantity;
 module.exports.recordBookingPayment = recordBookingPayment;
 module.exports.getRecentBookings = getRecentBookings;
+module.exports.computeAdminBookingTicketGroups = computeAdminBookingTicketGroups;
+module.exports.getAdminBookingTicketGroups = getAdminBookingTicketGroups;
