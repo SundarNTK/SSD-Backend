@@ -201,7 +201,11 @@ function makeImportExportController(
         errors.push(`${cleanHeader(f.header)} is required.`);
         return;
       }
-      if (f.type === "boolean") resolved[f.key] = f.default !== undefined ? f.default : false;
+      // Empty boolean cell always resolves to false (No) — never assume Yes
+      // from a blank. A field whose default is true (e.g. posVisibility,
+      // isPosAvailable) must be explicitly set to "Yes" in the sheet to
+      // become true; leaving it blank means No.
+      if (f.type === "boolean") resolved[f.key] = false;
       else if (f.type === "date") resolved[f.key] = f.default !== undefined ? f.default : undefined;
       else resolved[f.key] = f.default !== undefined ? f.default : f.type === "number" ? 0 : "";
       return;
